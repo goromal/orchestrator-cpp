@@ -1,3 +1,5 @@
 # orchestrator-cpp
 
-Boilerplate for creating a C++ library and executable built with CMake.
+C++ implementation of the daemon component of [orchestrator](https://github.com/goromal/orchestrator).
+
+***Under construction.***
