@@ -1,8 +1,13 @@
 #pragma once
 
+#include <atomic>
+#include <cstdint>
+#include <map>
 #include <string>
 #include <mscpp/MicroService.h>
 #include <mscpp/MicroServiceContainer.h>
+
+#include "orchestrator/Job.h"
 
 namespace orchestrator
 {
@@ -22,6 +27,8 @@ public:
 private:
     const Container mContainer;
 
+    std::atomic_int64_t mGlobalCounter;
+    std::vector<Job>    mPendingJobs;
     // TODO
 };
 
