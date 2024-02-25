@@ -13,8 +13,8 @@ namespace orchestrator
 class Job
 {
 private:
-    int64_t mSpawnMillis;
-    int64_t mCounter;
+    int64_t mSpawnMillisId{-1};
+    // int64_t mCounter;
 
     aapis::orchestrator::v1::JobStatus mStatus;
 

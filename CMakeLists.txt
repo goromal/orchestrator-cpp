@@ -18,7 +18,7 @@ target_include_directories(${PROJ_NAME}
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(${PROJ_NAME} PUBLIC mscpp)
+target_link_libraries(${PROJ_NAME} PUBLIC mscpp protobuf)
 
 add_executable(${PROJ_NAME}d
   src/main.cpp
