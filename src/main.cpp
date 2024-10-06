@@ -35,7 +35,7 @@ int main(int argc, char* argv[])
         num_threads = vm["num-allowed-threads"].as<uint32_t>();
     }
 
-    ServiceFactory<orchestrator::JobQueue> factory;
+    services::ServiceFactory<orchestrator::job_queue::JobQueue> factory;
 
     // TODO initialization
 
