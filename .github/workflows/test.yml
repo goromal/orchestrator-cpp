@@ -7,7 +7,7 @@ on:
     branches:
       - master
 jobs:
-  tests:
+  thorough-tests:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
@@ -18,6 +18,10 @@ jobs:
       with:
         name: github-public
         authToken: '${{ secrets.CACHIX_AUTH_TOKEN }}'
+        skipPush: true
     - run: >
         git config --global url."https://github.com/".insteadOf ssh://git@github.com/
-    - run: export NIXPKGS_ALLOW_UNFREE=1 && nix-build -E 'with (import (fetchTarball "https://github.com/goromal/anixpkgs/archive/refs/heads/master.tar.gz") {}); orchestrator-cpp.override { pkg-src = lib.cleanSource ./.; }'
+    - run: >
+        export NIXPKGS_ALLOW_UNFREE=1 && nix-shell --run "cpp-helper challenge all"
+    - run: >
+        [[ -f build/unit-tests ]] || false

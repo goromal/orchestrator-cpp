@@ -10,24 +10,25 @@
 namespace orchestrator
 {
 
-class Job
+struct Job
 {
-private:
-    int64_t mSpawnMillisId{-1};
+    std::string mJobKey;
+
+    int64_t id{-1};
     // int64_t mCounter;
 
-    aapis::orchestrator::v1::JobStatus mStatus;
+    aapis::orchestrator::v1::JobStatus status;
 
-    int64_t mPriority;
-    int64_t mNumBlockers;
+    int64_t priority;
+    int64_t numBlockers;
 
-    std::vector<int64_t> mBlockedChildren;
-    std::vector<int64_t> mDependentChildren;
+    std::vector<int64_t> blockedChildren;
+    std::vector<int64_t> dependentChildren;
 
-    int64_t mExecutionMillis;
-    int64_t mCompletionMillis;
+    int64_t executionMillis;
+    int64_t completionMillis;
 
-    std::vector<std::string> mOutputs;
+    std::vector<std::string> outputs;
 };
 
 } // end namespace orchestrator

@@ -4,32 +4,44 @@
 namespace orchestrator
 {
 
-std::string JobQueue::name() const
+namespace job_queue
+{
+
+void Store::sortJobs()
+{
+    // ^^^^ TODO to be sorted with complex function
+}
+
+const std::string JobQueue::name() const
 {
     return "JobQueue";
 }
 
-int64_t JobQueue::push(std::unique_ptr<Job> job)
+size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    std::scoped_lock l(mPendingJobsMtx);
+    // ^^^^ TODO
+}
 
-    // Job ID = (milliseconds since epoch) * 1000 + subcount
+size_t InitState::step(Store& s, const Container& c, PushInput& i)
+{
     int64_t spawnMicrosId =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                 .count() *
             1e3 +
-        static_cast<int64_t>(mSubCounter);
-    mSubCounter++;
-
-    mPendingJobs.push_back(std::move(job));
-    sortJobs();
-
-    return spawnMicrosId;
+        static_cast<int64_t>(s.subCounter);
+    s.subCounter++;
+    i.job.id = spawnMicrosId;
+    s.pendingJobs.push_back(std::move(i.job));
+    s.sortJobs();
+    i.setResult(result::JobIdResult{spawnMicrosId});
+    return index();
 }
 
-void JobQueue::sortJobs()
+size_t InitState::step(Store& s, const Container& c, QueryInput& i)
 {
-    // TODO to be sorted with complex function
+    // ^^^^ TODO
 }
+
+} // namespace job_queue
 
 } // end namespace orchestrator
