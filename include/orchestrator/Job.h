@@ -12,23 +12,30 @@ namespace orchestrator
 
 struct Job
 {
-    std::string mJobKey;
-
     int64_t id{-1};
-    // int64_t mCounter;
+    int64_t parentId{-1};
 
     aapis::orchestrator::v1::JobStatus status;
+    aapis::orchestrator::v1::JobStatus prePauseStatus{aapis::orchestrator::v1::JobStatus::JOB_STATUS_INVALID};
 
-    int64_t priority;
-    int64_t numBlockers;
+    int64_t priority{0};
 
-    std::vector<int64_t> blockedChildren;
-    std::vector<int64_t> dependentChildren;
+    int64_t spawnTimeSeconds{-1};
+    int64_t executionTimeSeconds{-1};
+    int64_t completionTimestampSeconds{-1};
 
-    int64_t executionMillis;
-    int64_t completionMillis;
+    // Blockers whose outputs have no relevance to this job
+    std::vector<int64_t> independentBlockers;
+    // Blockers whose outputs (and whose children's outputs) must become additional inputs to this job
+    std::vector<int64_t> relevantBlockers;
 
-    std::vector<std::string> outputs;
+    size_t numBlockers() const
+    {
+        return independentBlockers.size() + relevantBlockers.size();
+    }
+
+    // Populated using client-specified inputs as well as relevantBlockers' outputs obtained via database query
+    std::vector<std::string> inputs;
 };
 
 } // end namespace orchestrator

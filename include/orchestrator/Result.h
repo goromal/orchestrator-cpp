@@ -2,6 +2,8 @@
 #include <utility>
 #include <cstdint>
 
+#include <aapis/orchestrator/v1/orchestrator.pb.h>
+
 namespace orchestrator
 {
 
@@ -20,6 +22,12 @@ struct BooleanResult
 struct JobIdResult
 {
     int64_t id;
+};
+
+struct JobResult
+{
+    aapis::orchestrator::v1::JobStatus resultStatus;
+    std::vector<std::string>           outputs;
 };
 
 struct JobsListResult
