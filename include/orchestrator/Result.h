@@ -1,6 +1,9 @@
+#pragma once
+
 #include <variant>
 #include <utility>
 #include <cstdint>
+#include <future>
 
 #include <aapis/orchestrator/v1/orchestrator.pb.h>
 
@@ -29,6 +32,8 @@ struct JobResult
     aapis::orchestrator::v1::JobStatus resultStatus;
     std::vector<std::string>           outputs;
 };
+
+using FutureJobResult = std::future<JobResult>;
 
 struct JobsListResult
 {

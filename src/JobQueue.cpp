@@ -85,20 +85,113 @@ void Store::unpauseJobs()
     }
 }
 
+void Store::processPendingJobResults()
+{
+    // ^^^^ TODO check futures in the store. when future returns a completion status, execute a store function to
+    // eliminate blockers and add child blockers and child outputs
+    // so future needs to return completion status as well as outputs
+}
+
 const std::string JobQueue::name() const
 {
     return "JobQueue";
 }
 
+size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
+{
+    // ^^^^ TODO
+}
+
+size_t InitState::step(Store& s, const Container& c, PushInput& i)
+{
+    // ^^^^ TODO
+}
+
+size_t InitState::step(Store& s, const Container& c, QueryInput& i)
+{
+    // ^^^^ TODO
+}
+
+size_t InitState::step(Store& s, const Container& c, TogglePauseInput& i)
+{
+    // ^^^^ TODO
+}
+
+size_t InitState::step(Store& s, const Container& c, DumpInput& i)
+{
+    // ^^^^ TODO
+}
+
 size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    // ^^^^ TODO A job CANNOT be queued for execution until all of its blockers (and all of their children!) have been
-    // confirmed as
-    // complete(grabbing their outputs) via a query
+    // There's a lot going on in this step, so time things to ensure we can fall within our time budget
+    static constexpr std::chrono::milliseconds kCheckFuturesBudget         = std::chrono::milliseconds(900);
+    static constexpr int                       kExecuteInputWaitMultiplier = 4;
 
-    // ^^^^ TODO store futures in the store. when future returns a completion status, execute a store function to
-    // eliminate blockers and add child blockers and child outputs
-    // so future needs to return completion status as well as outputs
+    // Part 1: Check futures for results and propagate the results to all queued jobs
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    s.processPendingJobResults();
+
+    // Do we have enough time to move onto Part 2? Calculate our Part 2 budget.
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
+    auto part1Duration                        = std::chrono::duration_cast<std::chrono::duration<double>>(now - start);
+    if (part1Duration > kCheckFuturesBudget)
+    {
+        return RunningState::index();
+    }
+    std::chrono::milliseconds kDumpJobsBudget =
+        kCheckFuturesBudget - std::chrono::duration_cast<std::chrono::milliseconds>(part1Duration);
+
+    // Part 2: Dump as many "ready" jobs onto the execution stack as we can
+    start = std::chrono::steady_clock::now();
+    for (auto it = s.pendingJobs.begin(); it != s.pendingJobs.end();)
+    {
+        // Don't consider any jobs that have outstanding blockers.
+        if (it->numBlockers() > 0)
+        {
+            ++it;
+            continue;
+        }
+
+        // Prepare the job for execution
+        auto tryExecInput  = job_executor::ExecuteInput{.job = *it}; // ^^^^ TODO make sure that job copies
+        auto tryExecFuture = tryExecInput.getFuture();
+
+        // Only attempt to queue this job if we have enough time budget to wait for an answer
+        const auto tryExecInputWaitTime = kExecuteInputWaitMultiplier * tryExecInput.duration();
+        now                             = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start) + tryExecInputWaitTime >
+            kCheckFuturesBudget)
+        {
+            return RunningState::index();
+        }
+
+        // The executor will tell us if there was room for our pending job.
+        // Wait for "as long as it takes" to get this information.
+        if (!c.get<job_executor::JobExecutor>()->sendInput(std::move(tryExecInput)))
+        {
+            return RunningState::index();
+        }
+        if (tryExecFuture.wait_for(tryExecInputWaitTime) != std::future_status::ready)
+        {
+            // Our timeout underestimated how slow JobExecutor is; see if we can try again
+            continue;
+        }
+        // If there was no room, then exit. Else, store the future result, remove the pending job from the list, and
+        // move on to trying to jump another job.
+        auto tryExecResult = tryExecFuture.get();
+        if (std::holds_alternative<services::ErrorResult>)
+        {
+            return RunningState::index();
+        }
+        else
+        {
+            s.pendingJobResults.push_back(std::move(std::get<result::FutureJobResult>(tryExecResult)));
+            it = s.pendingJobs.erase(it); // this increments the iterator
+        }
+    }
+
+    return RunningState::index();
 }
 
 // This is the sole way to add a job (manually specified or automatically derived) to the execution queue
@@ -118,6 +211,11 @@ size_t RunningState::step(Store& s, const Container& c, QueryInput& i)
     // ^^^^ TODO
 }
 
+size_t RunningState::step(Store& s, const Container& c, DumpInput& i)
+{
+    // ^^^^ TODO
+}
+
 size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
 {
     s.pauseJobs();
@@ -128,7 +226,9 @@ size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
 
 size_t PausedState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    // ^^^^ TODO
+    // If we're paused, then only worry about cleaning up any pending job results we have left
+    s.processPendingJobResults();
+    return PausedState::index();
 }
 
 size_t PausedState::step(Store& s, const Container& c, PushInput& i)
@@ -153,6 +253,11 @@ size_t PausedState::step(Store& s, const Container& c, TogglePauseInput& i)
 
     i.setResult(result::BooleanResult{true});
     return RunningState::index();
+}
+
+size_t PausedState::step(Store& s, const Container& c, DumpInput& i)
+{
+    // ^^^^ TODO
 }
 
 } // namespace job_queue

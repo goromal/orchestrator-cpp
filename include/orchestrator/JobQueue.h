@@ -36,41 +36,61 @@ struct QueryInput : public services::Input<QueryInput, result::JobsListResult, 1
     // ^^^^ TODO
 };
 
-struct TogglePauseInput : public services::Input<TogglePauseInput, result::BooleanResult, 1, 5>
+struct TogglePauseInput : public services::Input<TogglePauseInput, result::BooleanResult, 2, 5>
 {
 };
 
-using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, TogglePauseInput>;
+struct DumpInput : public services::Input<DumpInput, result::BooleanResult, 1, 100>
+{
+};
 
-using Container = services::MicroServiceContainer<>; // ^^^^ TODO dependencies
+using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, TogglePauseInput, DumpInput>;
+
+using Container = services::MicroServiceContainer<job_executor::JobExecutor>; // ^^^^ TODO dependencies
 
 struct Store // ^^^^ TODO
 {
-    std::atomic_uint8_t subCounter{0};
-    std::vector<Job>    pendingJobs;
-    int64_t             initializeJobData(Job& job, bool paused);
-    void                sortJobs();
-    void                pauseJobs();
-    void                unpauseJobs();
+    std::atomic_uint8_t                  subCounter{0};
+    std::vector<Job>                     pendingJobs;
+    std::vector<result::FutureJobResult> pendingJobResults;
+    int64_t                              initializeJobData(Job& job, bool paused);
+    void                                 sortJobs();
+    void                                 pauseJobs();
+    void                                 unpauseJobs();
+    void                                 processPendingJobResults();
 };
 
-struct RunningState : public services::State<RunningState, 0>
+// Initial state in which any persistent memory is loaded
+struct InitState : public services::State<InitState, 0>
 {
     size_t step(Store& s, const Container& c, HeartbeatInput& i);
     size_t step(Store& s, const Container& c, PushInput& i);
     size_t step(Store& s, const Container& c, QueryInput& i);
     size_t step(Store& s, const Container& c, TogglePauseInput& i);
+    size_t step(Store& s, const Container& c, DumpInput& i);
 };
 
-struct PausedState : public services::State<PausedState, 0>
+// Nominal running state
+struct RunningState : public services::State<RunningState, 1>
 {
     size_t step(Store& s, const Container& c, HeartbeatInput& i);
     size_t step(Store& s, const Container& c, PushInput& i);
     size_t step(Store& s, const Container& c, QueryInput& i);
     size_t step(Store& s, const Container& c, TogglePauseInput& i);
+    size_t step(Store& s, const Container& c, DumpInput& i);
 };
 
-using States = services::StateSet<RunningState, PausedState>;
+// Paused state in which no new active jobs get queued
+struct PausedState : public services::State<PausedState, 2>
+{
+    size_t step(Store& s, const Container& c, HeartbeatInput& i);
+    size_t step(Store& s, const Container& c, PushInput& i);
+    size_t step(Store& s, const Container& c, QueryInput& i);
+    size_t step(Store& s, const Container& c, TogglePauseInput& i);
+    size_t step(Store& s, const Container& c, DumpInput& i);
+};
+
+using States = services::StateSet<InitState, RunningState, PausedState>;
 
 using JobQueueBase = services::MicroService<Store, Container, States, Inputs>;
 
