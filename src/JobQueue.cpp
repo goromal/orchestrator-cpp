@@ -8,6 +8,16 @@ namespace orchestrator
 namespace job_queue
 {
 
+int64_t Store::addAndRegisterNewJob(Job& job, bool paused)
+{
+    auto id = initializeJobData(job, paused);
+
+    pendingJobs.push_back(std::move(job));
+    sortJobs();
+
+    return id;
+}
+
 int64_t Store::initializeJobData(Job& job, bool paused)
 {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -85,14 +95,18 @@ void Store::unpauseJobs()
     }
 }
 
-void Store::processPendingJobResults()
+std::vector<Job> Store::processPendingJobResults()
 {
     // ^^^^ TODO check futures in the store. when future returns a completion status, execute a store function to
     // eliminate blockers and add child blockers and child outputs
     // so future needs to return completion status as well as outputs
 
-    // ^^^^ TODO how do we represent / deal with jobs that are waiting to become other jobs once they receive child
-    // outputs? how and why is this done in the py version?
+    // ^^^^ TODO if the future came back with childhow can we queue them up?? jobs instead, just return them
+
+    // ^^^^ TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
+    //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
+    //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
+    //           futures from JobExecutor::initState while in the initState
 }
 
 const std::string JobQueue::name() const
@@ -133,7 +147,10 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
 
     // Part 1: Check futures for results and propagate the results to all queued jobs
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    s.processPendingJobResults();
+    for (auto spawnedJob : s.processPendingJobResults())
+    {
+        s.addAndRegisterNewJob(spawnedJob, false);
+    }
 
     // Do we have enough time to move onto Part 2? Calculate our Part 2 budget.
     std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
@@ -157,6 +174,7 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
         }
 
         // Prepare the job for execution
+        auto tryExecKey    = it->id;
         auto tryExecInput  = job_executor::ExecuteInput{.job = *it}; // ^^^^ TODO make sure that job copies
         auto tryExecFuture = tryExecInput.getFuture();
 
@@ -189,7 +207,8 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
         }
         else
         {
-            s.pendingJobResults.push_back(std::move(std::get<result::FutureJobResult>(tryExecResult)));
+            s.pendingJobResults.emplace(
+                std::make_pair(tryExecKey, std::move(std::get<result::FutureJobResult>(tryExecResult))));
             it = s.pendingJobs.erase(it); // this increments the iterator
         }
     }
@@ -197,15 +216,10 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
     return RunningState::index();
 }
 
-// This is the sole way to add a job (manually specified or automatically derived) to the execution queue
+// Add an externally created job to the execution queue
 size_t RunningState::step(Store& s, const Container& c, PushInput& i)
 {
-    auto id = s.initializeJobData(i.job, false);
-
-    s.pendingJobs.push_back(std::move(i.job));
-    s.sortJobs();
-
-    i.setResult(result::JobIdResult{id});
+    i.setResult(result::JobIdResult{s.addAndRegisterNewJob(i.job, false)});
     return RunningState::index();
 }
 
@@ -230,18 +244,16 @@ size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
 size_t PausedState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
     // If we're paused, then only worry about cleaning up any pending job results we have left
-    s.processPendingJobResults();
+    for (auto spawnedJob : s.processPendingJobResults())
+    {
+        s.addAndRegisterNewJob(spawnedJob, true);
+    }
     return PausedState::index();
 }
 
 size_t PausedState::step(Store& s, const Container& c, PushInput& i)
 {
-    auto id = s.initializeJobData(i.job, true);
-
-    s.pendingJobs.push_back(std::move(i.job));
-    s.sortJobs();
-
-    i.setResult(result::JobIdResult{id});
+    i.setResult(result::JobIdResult{s.addAndRegisterNewJob(i.job, true)});
     return PausedState::index();
 }
 

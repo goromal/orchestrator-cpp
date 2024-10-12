@@ -48,16 +48,17 @@ using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, ToggleP
 
 using Container = services::MicroServiceContainer<job_executor::JobExecutor>; // ^^^^ TODO dependencies
 
-struct Store // ^^^^ TODO
+struct Store // ^^^^ TODO make this a class with private members
 {
-    std::atomic_uint8_t                  subCounter{0};
-    std::vector<Job>                     pendingJobs;
-    std::vector<result::FutureJobResult> pendingJobResults;
-    int64_t                              initializeJobData(Job& job, bool paused);
-    void                                 sortJobs();
-    void                                 pauseJobs();
-    void                                 unpauseJobs();
-    void                                 processPendingJobResults();
+    std::atomic_uint8_t                        subCounter{0};
+    std::vector<Job>                           pendingJobs;
+    std::map<int64_t, result::FutureJobResult> pendingJobResults;
+    int64_t                                    addAndRegisterNewJob(Job& job, bool paused);
+    int64_t                                    initializeJobData(Job& job, bool paused);
+    void                                       sortJobs();
+    void                                       pauseJobs();
+    void                                       unpauseJobs();
+    std::vector<Job>                           processPendingJobResults();
 };
 
 // Initial state in which any persistent memory is loaded

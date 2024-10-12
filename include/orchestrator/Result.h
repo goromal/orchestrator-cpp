@@ -7,6 +7,8 @@
 
 #include <aapis/orchestrator/v1/orchestrator.pb.h>
 
+#include "orchestrator/Job.h"
+
 namespace orchestrator
 {
 
@@ -27,10 +29,11 @@ struct JobIdResult
     int64_t id;
 };
 
+// The result of job execution: a status and either outputs or new spawned jobs
 struct JobResult
 {
-    aapis::orchestrator::v1::JobStatus resultStatus;
-    std::vector<std::string>           outputs;
+    aapis::orchestrator::v1::JobStatus                       resultStatus;
+    std::variant<std::vector<std::string>, std::vector<Job>> outputs;
 };
 
 using FutureJobResult = std::future<JobResult>;
