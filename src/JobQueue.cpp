@@ -90,6 +90,9 @@ void Store::processPendingJobResults()
     // ^^^^ TODO check futures in the store. when future returns a completion status, execute a store function to
     // eliminate blockers and add child blockers and child outputs
     // so future needs to return completion status as well as outputs
+
+    // ^^^^ TODO how do we represent / deal with jobs that are waiting to become other jobs once they receive child
+    // outputs? how and why is this done in the py version?
 }
 
 const std::string JobQueue::name() const
