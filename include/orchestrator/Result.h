@@ -29,6 +29,11 @@ struct JobIdResult
     int64_t id;
 };
 
+struct JobIdsListResult
+{
+    std::vector<int64_t> ids;
+};
+
 // The result of job execution: a status and either outputs or new spawned jobs
 struct JobResult
 {
@@ -40,7 +45,7 @@ using FutureJobResult = std::future<JobResult>;
 
 struct JobsListResult
 {
-    // ^^^^ TODO
+    std::vector<Job> jobs;
 };
 
 // template<typename T>

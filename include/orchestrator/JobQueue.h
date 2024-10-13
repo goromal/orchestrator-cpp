@@ -14,6 +14,7 @@
 #include "orchestrator/Result.h"
 #include "orchestrator/Job.h"
 
+#include "orchestrator/JobDatabase.h"
 #include "orchestrator/JobExecutor.h"
 
 namespace orchestrator
@@ -33,7 +34,15 @@ struct PushInput : public services::Input<PushInput, result::JobIdResult, 0, 100
 
 struct QueryInput : public services::Input<QueryInput, result::JobsListResult, 1, 10>
 {
-    // ^^^^ TODO
+    typedef struct GetAllQueuedJobs
+    {
+    };
+    typedef struct GetJobsAtPriorityLevel
+    {
+        int64_t priority;
+    };
+    using QueryType = std::variant<GetAllQueuedJobs, GetJobsAtPriorityLevel>;
+    QueryType query;
 };
 
 struct TogglePauseInput : public services::Input<TogglePauseInput, result::BooleanResult, 2, 5>
@@ -46,7 +55,7 @@ struct DumpInput : public services::Input<DumpInput, result::BooleanResult, 1, 1
 
 using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, TogglePauseInput, DumpInput>;
 
-using Container = services::MicroServiceContainer<job_executor::JobExecutor>; // ^^^^ TODO dependencies
+using Container = services::MicroServiceContainer<job_executor::JobExecutor, job_database::JobDatabase>;
 
 struct Store // ^^^^ TODO make this a class with private members
 {
@@ -58,7 +67,8 @@ struct Store // ^^^^ TODO make this a class with private members
     void                                       sortJobs();
     void                                       pauseJobs();
     void                                       unpauseJobs();
-    std::vector<Job>                           processPendingJobResults();
+    std::vector<Job>                           processPendingJobResults(bool paused);
+    std::vector<Job>                           query(const QueryInput::QueryType& query);
 };
 
 // Initial state in which any persistent memory is loaded

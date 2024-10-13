@@ -1,6 +1,7 @@
 #include "orchestrator/JobQueue.h"
 #include <chrono>
 #include <algorithm>
+#include <ranges>
 
 namespace orchestrator
 {
@@ -11,6 +12,12 @@ namespace job_queue
 int64_t Store::addAndRegisterNewJob(Job& job, bool paused)
 {
     auto id = initializeJobData(job, paused);
+
+    // If the ID is already in pendingJobs, then throw an error
+    if (std::find_if(pendingJobs.begin(), pendingJobs.end(), [&](Job& j) { return j.id == id; }) != pendingJobs.end())
+    {
+        throw std::runtime_error("Duplicate job ID would be inserted in the Job Queue");
+    }
 
     pendingJobs.push_back(std::move(job));
     sortJobs();
@@ -25,7 +32,7 @@ int64_t Store::initializeJobData(Job& job, bool paused)
     job.spawnTimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(now).count();
 
     int64_t spawnMicrosId =
-        std::chrono::duration_cast<std::chrono::milliseconds>(now).count() * 1e3 + static_cast<int64_t>(s.subCounter);
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count() * 1e3 + static_cast<int64_t>(subCounter);
 
     subCounter++;
 
@@ -95,18 +102,104 @@ void Store::unpauseJobs()
     }
 }
 
-std::vector<Job> Store::processPendingJobResults()
+std::vector<Job> Store::processPendingJobResults(bool paused)
 {
-    // ^^^^ TODO check futures in the store. when future returns a completion status, execute a store function to
-    // eliminate blockers and add child blockers and child outputs
-    // so future needs to return completion status as well as outputs
+    static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(1);
 
-    // ^^^^ TODO if the future came back with childhow can we queue them up?? jobs instead, just return them
-
+    for (auto& futJobResult : pendingJobResults)
+    {
+        auto jobId = futJobResult.first;
+        if (futJobResult.second.wait_for(kFutureCheckTimeout) == std::future_status::ready)
+        {
+            auto jobResult = futJobResult.second.get();
+            // If the job was unsuccessful, then mark all dependent jobs as canceled and move on. The executor will deal
+            // with them.
+            if (jobResult.resultStatus == aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR)
+            {
+                std::ranges::for_each(pendingJobs, [&](Job& j) {
+                    if (std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId) !=
+                            j.independentBlockers.end() ||
+                        std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId) !=
+                            j.relevantBlockers.end())
+                    {
+                        j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+                    }
+                });
+            }
+            else
+            {
+                // If the job returned outputs, then remove the blocker from any blocked jobs and add all outputs as
+                // inputs for the case of relevantBlockers.
+                if (std::holds_alternative<std::vector<std::string>>(jobResult.outputs))
+                {
+                    auto outputs = std::get<std::vector<std::string>>(jobResult.outputs);
+                    std::ranges::for_each(pendingJobs, [&](Job& j) {
+                        auto indBlockerIt =
+                            std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId);
+                        if (indBlockerIt != j.independentBlockers.end())
+                        {
+                            j.independentBlockers.erase(indBlockerIt);
+                        }
+                        auto relBlockerIt = std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId);
+                        if (relBlockerIt != j.relevantBlockers.end())
+                        {
+                            j.relevantBlockers.erase(relBlockerIt);
+                            std::move(outputs.begin(), outputs.end(), std::back_inserter(j.inputs));
+                        }
+                    });
+                }
+                // If the job returned child jobs, then add each child job to pendingJobs. Then, remove the parent ID
+                // from any blocked jobs but add the child job IDs to the corresponding blockers list.
+                else
+                {
+                    auto                 childJobs = std::get<std::vector<Job>>(jobResult.outputs);
+                    std::vector<int64_t> childJobIds(childJobs.size());
+                    std::transform(childJobs.begin(), childJobs.end(), childJobIds.begin(), [&](Job j) {
+                        return addAndRegisterNewJob(j, paused);
+                    });
+                    std::ranges::for_each(pendingJobs, [&](Job& j) {
+                        auto indBlockerIt =
+                            std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId);
+                        if (indBlockerIt != j.independentBlockers.end())
+                        {
+                            j.independentBlockers.erase(indBlockerIt);
+                            std::copy(childJobIds.begin(),
+                                      childJobIds.end(),
+                                      std::back_inserter(j.independentBlockers));
+                        }
+                        auto relBlockerIt = std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId);
+                        if (relBlockerIt != j.relevantBlockers.end())
+                        {
+                            j.relevantBlockers.erase(relBlockerIt);
+                            std::copy(childJobIds.begin(), childJobIds.end(), std::back_inserter(j.relevantBlockers));
+                        }
+                    });
+                }
+            }
+        }
+    }
     // ^^^^ TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
     //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
     //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
     //           futures from JobExecutor::initState while in the initState
+}
+
+std::vector<Job> Store::query(const QueryInput::QueryType& query)
+{
+    std::vector<Job> queryResult;
+
+    if (std::holds_alternative<QueryInput::GetAllQueuedJobs>(query))
+    {
+        std::copy(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult));
+    }
+    else if (std::holds_alternative<QueryInput::GetJobsAtPriorityLevel>(query))
+    {
+        std::copy_if(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult), [&](Job& j) {
+            j.priority == std::get<QueryInput::GetJobsAtPriorityLevel>(query).priority;
+        });
+    }
+
+    return queryResult;
 }
 
 const std::string JobQueue::name() const
@@ -116,27 +209,34 @@ const std::string JobQueue::name() const
 
 size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    // ^^^^ TODO
+    // ^^^^ TODO do we need a second init state for when we're waiting for acknowledgements that the previous pending
+    // jobs were successfully put up for execution?
 }
 
 size_t InitState::step(Store& s, const Container& c, PushInput& i)
 {
-    // ^^^^ TODO
+    i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
+    return InitState::index();
 }
 
 size_t InitState::step(Store& s, const Container& c, QueryInput& i)
 {
-    // ^^^^ TODO
+    i.setResult(services::ErrorResult{"Cannot query for state when the queue is still initializing"});
+    return InitState::index();
 }
 
 size_t InitState::step(Store& s, const Container& c, TogglePauseInput& i)
 {
-    // ^^^^ TODO
+    i.setResult(services::ErrorResult{"Cannot toggle pause when the queue is still initializing"});
+    return InitState::index();
 }
 
 size_t InitState::step(Store& s, const Container& c, DumpInput& i)
 {
-    // ^^^^ TODO
+    // The recovery database will not be deleted until we have exited the InitState, so we can safely give up
+    // mid-loading here
+    i.setResult(result::BooleanResult{true});
+    return InitState::index();
 }
 
 size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
@@ -147,7 +247,7 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
 
     // Part 1: Check futures for results and propagate the results to all queued jobs
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    for (auto spawnedJob : s.processPendingJobResults())
+    for (auto spawnedJob : s.processPendingJobResults(false))
     {
         s.addAndRegisterNewJob(spawnedJob, false);
     }
@@ -225,12 +325,13 @@ size_t RunningState::step(Store& s, const Container& c, PushInput& i)
 
 size_t RunningState::step(Store& s, const Container& c, QueryInput& i)
 {
-    // ^^^^ TODO
+    i.setResult(result::JobsListResult{s.query(i.query)});
+    return RunningState::index();
 }
 
 size_t RunningState::step(Store& s, const Container& c, DumpInput& i)
 {
-    // ^^^^ TODO
+    // ^^^^ TODO block on c.get<job_database::JobDatabase>()->sendInput() result and forward it
 }
 
 size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
@@ -244,7 +345,7 @@ size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
 size_t PausedState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
     // If we're paused, then only worry about cleaning up any pending job results we have left
-    for (auto spawnedJob : s.processPendingJobResults())
+    for (auto spawnedJob : s.processPendingJobResults(true))
     {
         s.addAndRegisterNewJob(spawnedJob, true);
     }
@@ -259,7 +360,8 @@ size_t PausedState::step(Store& s, const Container& c, PushInput& i)
 
 size_t PausedState::step(Store& s, const Container& c, QueryInput& i)
 {
-    // ^^^^ TODO
+    i.setResult(result::JobsListResult{s.query(i.query)});
+    return PausedState::index();
 }
 
 size_t PausedState::step(Store& s, const Container& c, TogglePauseInput& i)
@@ -272,7 +374,7 @@ size_t PausedState::step(Store& s, const Container& c, TogglePauseInput& i)
 
 size_t PausedState::step(Store& s, const Container& c, DumpInput& i)
 {
-    // ^^^^ TODO
+    // ^^^^ TODO block on c.get<job_database::JobDatabase>()->sendInput() result and forward it
 }
 
 } // namespace job_queue
