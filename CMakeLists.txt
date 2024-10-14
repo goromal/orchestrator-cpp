@@ -3,9 +3,34 @@ cmake_minimum_required (VERSION 3.16)
 set(PROJ_NAME orchestrator)
 project(${PROJ_NAME})
 
-set(CMAKE_CXX_STANDARD 20)
+if(NOT CMAKE_BUILD_TYPE)
+  set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+endif()
 
 option(BUILD_TESTS "Build Tests" ON)
+option(SECONDARY_SANITIZERS "Run Secondary Sanitizers" OFF)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++20")
+
+set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} \
+                             -pthread")
+
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+  if (SECONDARY_SANITIZERS)
+    add_compile_options(-fsanitize=thread)
+    add_link_options(-fsanitize=thread)
+  else()
+    add_compile_options(-fsanitize=address -fsanitize=undefined)
+    add_link_options(-fsanitize=address -fsanitize=undefined)
+  endif()
+  if(MSVC)
+    add_compile_options(/W4 /WX)
+  else()
+    add_compile_options(-Wall -Wextra -pedantic -Werror)
+  endif()
+endif()
 
 find_package(mscpp REQUIRED)
 find_package(Boost COMPONENTS program_options REQUIRED)
@@ -18,7 +43,7 @@ target_include_directories(${PROJ_NAME}
   $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(${PROJ_NAME} PUBLIC mscpp)
+target_link_libraries(${PROJ_NAME} PUBLIC mscpp protobuf)
 
 add_executable(${PROJ_NAME}d
   src/main.cpp
