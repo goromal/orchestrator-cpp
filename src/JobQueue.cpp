@@ -178,10 +178,6 @@ std::vector<Job> Store::processPendingJobResults(bool paused)
             }
         }
     }
-    // ^^^^ TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
-    //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
-    //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
-    //           futures from JobExecutor::initState while in the initState
 }
 
 std::vector<Job> Store::query(const QueryInput::QueryType& query)
@@ -211,6 +207,10 @@ size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
     // ^^^^ TODO do we need a second init state for when we're waiting for acknowledgements that the previous pending
     // jobs were successfully put up for execution?
+    //      TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
+    //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
+    //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
+    //           futures from JobExecutor::initState while in the initState
 }
 
 size_t InitState::step(Store& s, const Container& c, PushInput& i)
@@ -275,7 +275,7 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
 
         // Prepare the job for execution
         auto tryExecKey    = it->id;
-        auto tryExecInput  = job_executor::ExecuteInput{.job = *it}; // ^^^^ TODO make sure that job copies
+        auto tryExecInput  = job_executor::ExecuteInput{.job = *it};
         auto tryExecFuture = tryExecInput.getFuture();
 
         // Only attempt to queue this job if we have enough time budget to wait for an answer
@@ -329,9 +329,24 @@ size_t RunningState::step(Store& s, const Container& c, QueryInput& i)
     return RunningState::index();
 }
 
+// Only to be run to rescue data right before shutdown!
 size_t RunningState::step(Store& s, const Container& c, DumpInput& i)
 {
-    // ^^^^ TODO block on c.get<job_database::JobDatabase>()->sendInput() result and forward it
+    auto                        kv = std::views::keys(s.pendingJobResults);
+    std::vector<int64_t>        keys{kv.begin(), kv.end()};
+    job_database::DumpQueueData dumpInput{.pendingJobs = s.pendingJobs, .awaitedJobIds = keys};
+    auto                        dumpOutput = dumpInput.getFuture();
+    c.get<job_database::JobDatabase>()->sendInput(std::move(dumpInput));
+    auto dumpResult = dumpOutput.get();
+    if (std::holds_alternative<services::ErrorResult>(dumpResult))
+    {
+        i.setResult(result::BooleanResult{false});
+    }
+    else
+    {
+        i.setResult(result::BooleanResult{std::get<result::BooleanResult>(dumpResult).result});
+    }
+    return RunningState::index();
 }
 
 size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
@@ -374,7 +389,21 @@ size_t PausedState::step(Store& s, const Container& c, TogglePauseInput& i)
 
 size_t PausedState::step(Store& s, const Container& c, DumpInput& i)
 {
-    // ^^^^ TODO block on c.get<job_database::JobDatabase>()->sendInput() result and forward it
+    auto                        kv = std::views::keys(s.pendingJobResults);
+    std::vector<int64_t>        keys{kv.begin(), kv.end()};
+    job_database::DumpQueueData dumpInput{.pendingJobs = s.pendingJobs, .awaitedJobIds = keys};
+    auto                        dumpOutput = dumpInput.getFuture();
+    c.get<job_database::JobDatabase>()->sendInput(std::move(dumpInput));
+    auto dumpResult = dumpOutput.get();
+    if (std::holds_alternative<services::ErrorResult>(dumpResult))
+    {
+        i.setResult(result::BooleanResult{false});
+    }
+    else
+    {
+        i.setResult(result::BooleanResult{std::get<result::BooleanResult>(dumpResult).result});
+    }
+    return PausedState::index();
 }
 
 } // namespace job_queue

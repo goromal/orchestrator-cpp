@@ -49,7 +49,7 @@ struct TogglePauseInput : public services::Input<TogglePauseInput, result::Boole
 {
 };
 
-struct DumpInput : public services::Input<DumpInput, result::BooleanResult, 1, 100>
+struct DumpInput : public services::Input<DumpInput, result::BooleanResult, 1, 500>
 {
 };
 
