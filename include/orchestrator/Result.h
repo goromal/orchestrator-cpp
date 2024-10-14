@@ -48,6 +48,10 @@ struct JobsListResult
     std::vector<Job> jobs;
 };
 
+using JobQueueDataResult = std::pair<result::JobsListResult, result::JobIdsListResult>;
+
+using FutureJobQueueDataResult = std::future<JobQueueDataResult>;
+
 // template<typename T>
 // struct Success
 // {

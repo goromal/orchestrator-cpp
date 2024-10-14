@@ -205,12 +205,11 @@ const std::string JobQueue::name() const
 
 size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    // ^^^^ TODO do we need a second init state for when we're waiting for acknowledgements that the previous pending
-    // jobs were successfully put up for execution?
-    //      TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
-    //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
-    //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
-    //           futures from JobExecutor::initState while in the initState
+    // Shoot off a load data request to the database, then move on to the waiting state
+    job_database::LoadQueueData loadRequest;
+    s.pendingInitLoad = std::move(loadRequest.getFuture());
+    c.get<job_database::JobDatabase>()->sendInput(std::move(loadRequest));
+    return InitWaitState::index();
 }
 
 size_t InitState::step(Store& s, const Container& c, PushInput& i)
@@ -237,6 +236,42 @@ size_t InitState::step(Store& s, const Container& c, DumpInput& i)
     // mid-loading here
     i.setResult(result::BooleanResult{true});
     return InitState::index();
+}
+
+size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
+{
+    // ^^^^ TODO do we need a second init state for when we're waiting for acknowledgements that the previous pending
+    // jobs were successfully put up for execution?
+    //      TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
+    //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
+    //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
+    //           futures from JobExecutor::InitWaitState while in the InitWaitState
+}
+
+size_t InitWaitState::step(Store& s, const Container& c, PushInput& i)
+{
+    i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
+    return InitWaitState::index();
+}
+
+size_t InitWaitState::step(Store& s, const Container& c, QueryInput& i)
+{
+    i.setResult(services::ErrorResult{"Cannot query for state when the queue is still initializing"});
+    return InitWaitState::index();
+}
+
+size_t InitWaitState::step(Store& s, const Container& c, TogglePauseInput& i)
+{
+    i.setResult(services::ErrorResult{"Cannot toggle pause when the queue is still initializing"});
+    return InitWaitState::index();
+}
+
+size_t InitWaitState::step(Store& s, const Container& c, DumpInput& i)
+{
+    // The recovery database will not be deleted until we have exited the InitWaitState, so we can safely give up
+    // mid-loading here
+    i.setResult(result::BooleanResult{true});
+    return InitWaitState::index();
 }
 
 size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
