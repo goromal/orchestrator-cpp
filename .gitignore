@@ -1,5 +1,5 @@
 .vscode/*
 build/*
-*.nix
+default.nix
 result
 TMP*
