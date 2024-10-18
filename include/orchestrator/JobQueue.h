@@ -58,7 +58,7 @@ using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, ToggleP
 
 using Container = services::MicroServiceContainer<job_executor::JobExecutor, job_database::JobDatabase>;
 
-struct Store // TODO clean up by making this a class with private members
+struct Store // TODO clean up by making this a class to protect private members
 {
     std::atomic_uint8_t                        subCounter{0};
     std::vector<Job>                           pendingJobs;
