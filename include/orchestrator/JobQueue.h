@@ -128,7 +128,7 @@ struct PausedState : public services::State<PausedState, 4>
     size_t step(Store& s, const Container& c, DumpInput& i);
 };
 
-using States = services::StateSet<InitState, RunningState, PausedState>;
+using States = services::StateSet<InitState, InitWaitState, InitFinalWaitState, RunningState, PausedState>;
 
 using JobQueueBase = services::MicroService<Store, Container, States, Inputs>;
 
