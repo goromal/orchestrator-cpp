@@ -72,6 +72,10 @@ struct PausedState : public services::State<PausedState, 2>
     size_t step(Store& s, const Container& c, DumpInput& i);
 };
 
+// ^^^^ TODO it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
+//      but it's the QUEUE's responsibility to get that info from the database on restart
+//      and ask the executor to re-execute via the standard ExecuteInput interface
+
 using States = services::StateSet<InitState, RunningState, PausedState>;
 
 using JobExecutorBase = services::MicroService<Store, Container, States, Inputs>;

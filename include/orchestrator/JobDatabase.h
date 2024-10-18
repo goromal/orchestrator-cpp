@@ -30,7 +30,7 @@ struct DumpQueueData : public services::Input<DumpQueueData, result::BooleanResu
     std::vector<int64_t> awaitedJobIds;
 };
 
-struct LoadQueueData : public services::Input<LoadQueueData, JobQueueDataResult, 1, 100>
+struct LoadQueueData : public services::Input<LoadQueueData, result::JobQueueDataResult, 1, 100>
 {
 };
 

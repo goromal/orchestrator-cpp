@@ -102,6 +102,70 @@ void Store::unpauseJobs()
     }
 }
 
+// Send off as many jobs as possible to be executed within the allotted time budget
+// Return false if jobs is not empty by the end of execution
+bool Store::timedJobDrain(const std::chrono::milliseconds&       timeBudget,
+                          std::vector<Job>&                      jobs,
+                          const Container&                       c,
+                          const std::function<bool(const Job&)>& fJobDrainCriterion)
+{
+    static constexpr int kExecuteInputWaitMultiplier = 4;
+
+    // Each loaded job ID must be passed to the executor to get a future back
+    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+    std::chrono::steady_clock::time_point now   = std::chrono::steady_clock::now();
+    for (auto it = jobs.begin(); it != jobs.end();)
+    {
+        // Don't consider jobs that don't meet the drain criteria
+        if (!fJobDrainCriterion(*it))
+        {
+            ++it;
+            continue;
+        }
+
+        // Prepare the job for execution
+        auto tryExecKey    = it->id;
+        auto tryExecInput  = job_executor::ExecuteInput{.job = *it};
+        auto tryExecFuture = tryExecInput.getFuture();
+
+        // Only attempt to queue this job if we have enough time budget to wait for an answer
+        const auto tryExecInputWaitTime = kExecuteInputWaitMultiplier * tryExecInput.duration();
+        now                             = std::chrono::steady_clock::now();
+        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start) + tryExecInputWaitTime > timeBudget)
+        {
+            return false;
+        }
+
+        // The executor will tell us if there was room for our pending job.
+        // Wait for "as long as it takes" to get this information.
+        if (!c.get<job_executor::JobExecutor>()->sendInput(std::move(tryExecInput)))
+        {
+            return false;
+        }
+        while (tryExecFuture.wait_for(tryExecInputWaitTime) != std::future_status::ready)
+        {
+            // Our timeout underestimated how slow JobExecutor is; see if we can try again
+            // TODO log a warning
+        }
+        // If there was no room, then exit. Else, store the future result, remove the pending job from the list, and
+        // move on to trying to jump another job.
+        auto tryExecResult = tryExecFuture.get();
+        if (std::holds_alternative<services::ErrorResult>)
+        {
+            // TODO log error
+            return false;
+        }
+        else
+        {
+            pendingJobResults.emplace(
+                std::make_pair(tryExecKey, std::move(std::get<result::FutureJobResult>(tryExecResult))));
+            it = jobs.erase(it); // this increments the iterator
+        }
+    }
+
+    return jobs.size() == 0;
+}
+
 std::vector<Job> Store::processPendingJobResults(bool paused)
 {
     static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(1);
@@ -240,12 +304,37 @@ size_t InitState::step(Store& s, const Container& c, DumpInput& i)
 
 size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    // ^^^^ TODO do we need a second init state for when we're waiting for acknowledgements that the previous pending
-    // jobs were successfully put up for execution?
-    //      TODO it's the QUEUE's responsibility to dump pendingJobResults JOBIDs on shutdown
-    //           it's the EXECUTOR's responsibility to dump all the info about running jobs on shutdown
-    //           it's the QUEUE's responsibility to reload all pendingJobResult JOBIDs on startup and REQUEST new
-    //           futures from JobExecutor::InitWaitState while in the InitWaitState
+    static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(1);
+
+    // Continue waiting if the init load is not ready
+    if (s.pendingInitLoad.wait_for(kFutureCheckTimeout) != std::future_status::ready)
+    {
+        return InitWaitState::index();
+    }
+
+    auto initLoadResult = s.pendingInitLoad.get();
+
+    if (std::holds_alternative<services::ErrorResult>(initLoadResult))
+    {
+        // TODO log an error
+        return RunningState::index();
+    }
+
+    result::JobQueueDataResult jobQueueData = std::get<result::JobQueueDataResult>(initLoadResult);
+
+    // Set pending jobs directly equal to the loaded data set
+    s.pendingJobs = jobQueueData.first.jobs;
+    s.sortJobs();
+
+    // If there are no in-progress jobs to re-request, then jump directly to the running state
+    if (jobQueueData.second.jobs.size() == 0)
+    {
+        return RunningState::index();
+    }
+
+    // Store the pending in-progress jobs to re-request and move on to the final init state
+    s.pendingInitExecs = jobQueueData.second.jobs;
+    return InitFinalWaitState::index();
 }
 
 size_t InitWaitState::step(Store& s, const Container& c, PushInput& i)
@@ -274,11 +363,50 @@ size_t InitWaitState::step(Store& s, const Container& c, DumpInput& i)
     return InitWaitState::index();
 }
 
+size_t InitFinalWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
+{
+    // There's a lot going on in this step, so time things to ensure we can fall within our time budget
+    static constexpr std::chrono::milliseconds kCheckFuturesBudget = std::chrono::milliseconds(950);
+
+    // Each loaded job ID must be passed to the executor to get a future back
+    if (!s.timedJobDrain(kCheckFuturesBudget, s.pendingInitExecs, c, [](const Job& j) { return true; }))
+    {
+        return InitFinalWaitState::index();
+    }
+
+    return RunningState::index();
+}
+
+size_t InitFinalWaitState::step(Store& s, const Container& c, PushInput& i)
+{
+    i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
+    return InitFinalWaitState::index();
+}
+
+size_t InitFinalWaitState::step(Store& s, const Container& c, QueryInput& i)
+{
+    i.setResult(services::ErrorResult{"Cannot query for state when the queue is still initializing"});
+    return InitFinalWaitState::index();
+}
+
+size_t InitFinalWaitState::step(Store& s, const Container& c, TogglePauseInput& i)
+{
+    i.setResult(services::ErrorResult{"Cannot toggle pause when the queue is still initializing"});
+    return InitFinalWaitState::index();
+}
+
+size_t InitFinalWaitState::step(Store& s, const Container& c, DumpInput& i)
+{
+    // The recovery database will not be deleted until we have exited the InitFinalWaitState, so we can safely give up
+    // mid-loading here
+    i.setResult(result::BooleanResult{true});
+    return InitFinalWaitState::index();
+}
+
 size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
     // There's a lot going on in this step, so time things to ensure we can fall within our time budget
-    static constexpr std::chrono::milliseconds kCheckFuturesBudget         = std::chrono::milliseconds(900);
-    static constexpr int                       kExecuteInputWaitMultiplier = 4;
+    static constexpr std::chrono::milliseconds kCheckFuturesBudget = std::chrono::milliseconds(900);
 
     // Part 1: Check futures for results and propagate the results to all queued jobs
     std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -298,54 +426,9 @@ size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
         kCheckFuturesBudget - std::chrono::duration_cast<std::chrono::milliseconds>(part1Duration);
 
     // Part 2: Dump as many "ready" jobs onto the execution stack as we can
-    start = std::chrono::steady_clock::now();
-    for (auto it = s.pendingJobs.begin(); it != s.pendingJobs.end();)
+    if (!s.timedJobDrain(kCheckFuturesBudget, s.pendingJobs, c, [](const Job& j) { return j.numBlockers() == 0; }))
     {
-        // Don't consider any jobs that have outstanding blockers.
-        if (it->numBlockers() > 0)
-        {
-            ++it;
-            continue;
-        }
-
-        // Prepare the job for execution
-        auto tryExecKey    = it->id;
-        auto tryExecInput  = job_executor::ExecuteInput{.job = *it};
-        auto tryExecFuture = tryExecInput.getFuture();
-
-        // Only attempt to queue this job if we have enough time budget to wait for an answer
-        const auto tryExecInputWaitTime = kExecuteInputWaitMultiplier * tryExecInput.duration();
-        now                             = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start) + tryExecInputWaitTime >
-            kCheckFuturesBudget)
-        {
-            return RunningState::index();
-        }
-
-        // The executor will tell us if there was room for our pending job.
-        // Wait for "as long as it takes" to get this information.
-        if (!c.get<job_executor::JobExecutor>()->sendInput(std::move(tryExecInput)))
-        {
-            return RunningState::index();
-        }
-        if (tryExecFuture.wait_for(tryExecInputWaitTime) != std::future_status::ready)
-        {
-            // Our timeout underestimated how slow JobExecutor is; see if we can try again
-            continue;
-        }
-        // If there was no room, then exit. Else, store the future result, remove the pending job from the list, and
-        // move on to trying to jump another job.
-        auto tryExecResult = tryExecFuture.get();
-        if (std::holds_alternative<services::ErrorResult>)
-        {
-            return RunningState::index();
-        }
-        else
-        {
-            s.pendingJobResults.emplace(
-                std::make_pair(tryExecKey, std::move(std::get<result::FutureJobResult>(tryExecResult))));
-            it = s.pendingJobs.erase(it); // this increments the iterator
-        }
+        return RunningState::index();
     }
 
     return RunningState::index();

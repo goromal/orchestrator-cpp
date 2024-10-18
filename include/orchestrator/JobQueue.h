@@ -6,6 +6,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <functional>
 #include <mscpp/InputSet.h>
 #include <mscpp/StateSet.h>
 #include <mscpp/MicroService.h>
@@ -57,17 +58,22 @@ using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, ToggleP
 
 using Container = services::MicroServiceContainer<job_executor::JobExecutor, job_database::JobDatabase>;
 
-struct Store // ^^^^ TODO make this a class with private members
+struct Store // TODO clean up by making this a class with private members
 {
     std::atomic_uint8_t                        subCounter{0};
     std::vector<Job>                           pendingJobs;
     std::map<int64_t, result::FutureJobResult> pendingJobResults;
     result::FutureJobQueueDataResult           pendingInitLoad;
+    std::vector<Job>                           pendingInitExecs;
     int64_t                                    addAndRegisterNewJob(Job& job, bool paused);
     int64_t                                    initializeJobData(Job& job, bool paused);
     void                                       sortJobs();
     void                                       pauseJobs();
     void                                       unpauseJobs();
+    bool                                       timedJobDrain(const std::chrono::milliseconds&       timeBudget,
+                                                             std::vector<Job>&                      jobs,
+                                                             const Container&                       c,
+                                                             const std::function<bool(const Job&)>& fJobDrainCriterion);
     std::vector<Job>                           processPendingJobResults(bool paused);
     std::vector<Job>                           query(const QueryInput::QueryType& query);
 };
@@ -92,8 +98,18 @@ struct InitWaitState : public services::State<InitWaitState, 1>
     size_t step(Store& s, const Container& c, DumpInput& i);
 };
 
+// Final initial state in which formerly in-progress jobs are re-triggered
+struct InitFinalWaitState : public services::State<InitFinalWaitState, 2>
+{
+    size_t step(Store& s, const Container& c, HeartbeatInput& i);
+    size_t step(Store& s, const Container& c, PushInput& i);
+    size_t step(Store& s, const Container& c, QueryInput& i);
+    size_t step(Store& s, const Container& c, TogglePauseInput& i);
+    size_t step(Store& s, const Container& c, DumpInput& i);
+};
+
 // Nominal running state
-struct RunningState : public services::State<RunningState, 2>
+struct RunningState : public services::State<RunningState, 3>
 {
     size_t step(Store& s, const Container& c, HeartbeatInput& i);
     size_t step(Store& s, const Container& c, PushInput& i);
@@ -103,7 +119,7 @@ struct RunningState : public services::State<RunningState, 2>
 };
 
 // Paused state in which no new active jobs get queued
-struct PausedState : public services::State<PausedState, 3>
+struct PausedState : public services::State<PausedState, 4>
 {
     size_t step(Store& s, const Container& c, HeartbeatInput& i);
     size_t step(Store& s, const Container& c, PushInput& i);
