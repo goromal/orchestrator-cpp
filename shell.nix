@@ -1,15 +1,14 @@
 let
   pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/refs/heads/dev/bump.tar.gz")) # TODO: shuffle
+    ("https://github.com/goromal/anixpkgs/archive/refs/tags/v6.8.4.tar.gz"))
     { };
 in with pkgs;
 mkShell {
   nativeBuildInputs = [ cpp-helper cmake ];
   buildInputs = [
-    aapis-cpp
-    protobuf
-    mscpp
     boost
+    mscpp
+    aapis-cpp
   ];
   shellHook = ''
     cpp-helper vscode

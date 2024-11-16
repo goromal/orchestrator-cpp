@@ -38,7 +38,7 @@ using Inputs = services::InputSet<HeartbeatInput, DumpQueueData, LoadQueueData>;
 
 using Container = services::MicroServiceContainer<>;
 
-struct Store // ^^^^ TODO
+struct Store
 {
 };
 

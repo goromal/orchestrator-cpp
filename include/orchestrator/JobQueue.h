@@ -74,7 +74,7 @@ struct Store // TODO clean up by making this a class to protect private members
                                                              std::vector<Job>&                      jobs,
                                                              const Container&                       c,
                                                              const std::function<bool(const Job&)>& fJobDrainCriterion);
-    std::vector<Job>                           processPendingJobResults(bool paused);
+    void                                       processPendingJobResults(bool paused);
     std::vector<Job>                           query(const QueryInput::QueryType& query);
 };
 
