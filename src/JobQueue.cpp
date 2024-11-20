@@ -167,7 +167,7 @@ bool Store::timedJobDrain(const std::chrono::milliseconds&       timeBudget,
         // If there was no room, then exit. Else, store the future result, remove the pending job from the list, and
         // move on to trying to jump another job.
         auto tryExecResult = tryExecFuture.get();
-        if (std::holds_alternative<services::ErrorResult>)
+        if (std::holds_alternative<services::ErrorResult>(tryExecResult))
         {
             // TODO log error
             return false;
@@ -277,7 +277,7 @@ std::vector<Job> Store::query(const QueryInput::QueryType& query)
     else if (std::holds_alternative<QueryInput::GetJobsAtPriorityLevel>(query))
     {
         std::copy_if(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult), [&](Job& j) {
-            j.priority == std::get<QueryInput::GetJobsAtPriorityLevel>(query).priority;
+            return j.priority == std::get<QueryInput::GetJobsAtPriorityLevel>(query).priority;
         });
     }
 

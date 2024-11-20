@@ -6,7 +6,7 @@ BOOST_AUTO_TEST_SUITE(TestJobQueue)
 
 BOOST_AUTO_TEST_CASE(TestJobQueueInsertionIds)
 {
-    services::ServiceFactory<orchestrator::job_queue::JobQueue> factory;
+    // services::ServiceFactory<orchestrator::job_queue::JobQueue> factory;
 
     // static constexpr uint32_t numInsertions = 1000;
     // int64_t                   prevId        = 0;

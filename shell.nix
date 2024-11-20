@@ -1,6 +1,6 @@
 let
   pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/refs/tags/v6.8.4.tar.gz"))
+    ("https://github.com/goromal/anixpkgs/archive/refs/heads/dev/bump.tar.gz"))
     { };
 in with pkgs;
 mkShell {
@@ -9,6 +9,7 @@ mkShell {
     boost
     mscpp
     aapis-cpp
+    protobuf
   ];
   shellHook = ''
     cpp-helper vscode

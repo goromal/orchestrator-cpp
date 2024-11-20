@@ -58,7 +58,7 @@ class JobDatabase : public JobDatabaseBase
 public:
     JobDatabase(const Container& container) : JobDatabaseBase(container) {}
     const std::string name() const override;
-}
+};
 
 } // namespace job_database
 
