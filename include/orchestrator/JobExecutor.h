@@ -11,6 +11,7 @@
 #include <mscpp/MicroService.h>
 #include <mscpp/MicroServiceContainer.h>
 
+#include "orchestrator/internal/common.h"
 #include "orchestrator/Result.h"
 #include "orchestrator/Job.h"
 
