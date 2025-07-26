@@ -22,8 +22,7 @@ void init()
 
     sink->set_formatter(
         expr::stream << "[" << expr::format_date_time<boost::posix_time::ptime>("TimeStamp", "%Y-%m-%d %H:%M:%S")
-                     << "] [" << expr::attr<severity_level>("Severity") << "] [" << expr::attr<std::string>("File")
-                     << ":" << expr::attr<int>("Line") << "] " << expr::smessage);
+                     << "] [" << expr::attr<severity_level>("Severity") << "] " << expr::smessage);
 
     logging::core::get()->add_sink(sink);
     logging::add_common_attributes();

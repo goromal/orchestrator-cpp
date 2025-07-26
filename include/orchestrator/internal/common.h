@@ -10,6 +10,7 @@
 #include <boost/log/support/date_time.hpp>
 #include <boost/log/attributes/scoped_attribute.hpp>
 #include <boost/log/attributes/current_thread_id.hpp>
+#include <boost/log/attributes/mutable_constant.hpp>
 #include <boost/log/attributes/named_scope.hpp>
 #include <boost/log/utility/setup/file.hpp>
 #include <boost/log/sinks/text_ostream_backend.hpp>
@@ -47,14 +48,8 @@ inline std::ostream& operator<<(std::ostream& os, severity_level lvl)
     return os;
 }
 
-#define LOG(sev)                                                                                                       \
-    {                                                                                                                  \
-        BOOST_LOG_SCOPED_THREAD_TAG("File", __FILE__);                                                                 \
-    }                                                                                                                  \
-    {                                                                                                                  \
-        BOOST_LOG_SCOPED_THREAD_TAG("Line", __LINE__);                                                                 \
-    }                                                                                                                  \
-    BOOST_LOG_SEV(logger::get(), sev)
+#define __FILE_NAME_ONLY__ (strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1 : __FILE__)
+#define LOG(sev) BOOST_LOG_SEV(logger::get(), sev) << "[" << __FILE_NAME_ONLY__ << ":" << __LINE__ << "]\t"
 
 namespace logger
 {
