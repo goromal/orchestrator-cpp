@@ -39,6 +39,7 @@ set(LIB_DEPS mscpp protobuf)
 set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 
 add_library(${PROJ_NAME}
+  src/internal/common.cpp
   src/JobQueue.cpp
 )
 target_include_directories(${PROJ_NAME} PUBLIC ${LIB_INCS})
@@ -58,6 +59,7 @@ target_link_libraries(${PROJ_NAME}d
 
 if (BUILD_TESTS)
     add_executable(test-jobqueue
+        src/internal/common.cpp
         src/JobQueue.cpp
         src/JobExecutorMock.cpp
         src/JobDatabaseMock.cpp

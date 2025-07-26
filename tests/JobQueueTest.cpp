@@ -11,7 +11,7 @@ struct GlobalFixture
 {
     GlobalFixture()
     {
-        orchestrator::init_logging();
+        orchestrator::logger::init();
     }
     ~GlobalFixture() {}
 };
@@ -21,6 +21,7 @@ BOOST_GLOBAL_FIXTURE(GlobalFixture);
 BOOST_AUTO_TEST_CASE(TestJobQueueInit)
 {
     using namespace orchestrator;
+    LOG(info) << "INIT";
     using namespace orchestrator::job_executor;
     using namespace orchestrator::job_database;
     using namespace orchestrator::job_queue;
