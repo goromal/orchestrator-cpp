@@ -66,17 +66,47 @@ struct Store // TODO clean up by making this a class to protect private members
     std::map<int64_t, result::FutureJobResult> pendingJobResults;
     result::FutureJobQueueDataResult           pendingInitLoad;
     std::vector<Job>                           pendingInitExecs;
-    int64_t                                    addAndRegisterNewJob(Job& job, bool paused);
-    int64_t                                    initializeJobData(Job& job, bool paused);
-    void                                       sortJobs();
-    void                                       pauseJobs();
-    void                                       unpauseJobs();
-    bool                                       timedJobDrain(const std::chrono::milliseconds&       timeBudget,
-                                                             std::vector<Job>&                      jobs,
-                                                             const Container&                       c,
-                                                             const std::function<bool(const Job&)>& fJobDrainCriterion);
-    void                                       processPendingJobResults(bool paused);
-    std::vector<Job>                           query(const QueryInput::QueryType& query);
+
+    /// @brief Take a new job and register it with the queue store, giving it a unique ID
+    /// @param job Job to be registered and given an ID
+    /// @param paused Whether or not the program is currently paused
+    /// @return A globally unique, monotonically increasing ID
+    int64_t addAndRegisterNewJob(Job& job, bool paused);
+
+    /// @brief Assign a unique ID and job statuses to a job
+    /// @param job Job to be given an ID
+    /// @param paused Whether or not the program is currently paused
+    /// @return A globally unique, monotinically increasing ID
+    int64_t initializeJobData(Job& job, bool paused);
+
+    /// @brief Sort all registered jobs in the store according to blocking status, priority, and ID
+    void sortJobs();
+
+    /// @brief Give all registered jobs a paused status, storing their previous statuses
+    void pauseJobs();
+
+    /// @brief Restore all registered paused jobs to their pre-paused statuses
+    void unpauseJobs();
+
+    /// @brief Send as many jobs to the job executor as possible within the allotted time budget
+    /// @param timeBudget Allotted time budget
+    /// @param jobs Job pool to process
+    /// @param c Access point for the job executor
+    /// @param fJobDrainCriterion Criterion to determine if a job is ready for the executor
+    /// @return Whether or not all jobs were sent to the executor within the time budget
+    bool timedJobDrain(const std::chrono::milliseconds&       timeBudget,
+                       std::vector<Job>&                      jobs,
+                       const Container&                       c,
+                       const std::function<bool(const Job&)>& fJobDrainCriterion);
+
+    /// @brief Poll pending jobs for results and clear blockers and add child jobs as necessary
+    /// @param paused Whether or not the program is currently paused
+    void processPendingJobResults(bool paused);
+
+    /// @brief Return a copy of all jobs that match a query criterion
+    /// @param query Query criterion with which to filter jobs
+    /// @return Filtered list of jobs meeting the query criterion
+    std::vector<Job> query(const QueryInput::QueryType& query);
 };
 
 // Initial state in which any persistent memory is requested to be loaded

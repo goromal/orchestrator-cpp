@@ -28,7 +28,7 @@ size_t ForeverState::step(Store& s, const Container& c, LoadQueueData& i)
     LOG(debug) << "db lqd";
     // Queue up the load request and kick off asynchronous data loading
     s.loadRequest = std::move(i);
-    // i.setResult()
+    // i.setResult() ^^^^ TODO this is next for unlocking
     return ForeverState::index();
 }
 

@@ -9,10 +9,6 @@ namespace orchestrator
 namespace job_queue
 {
 
-/// @brief Take a new job and register it with the queue store, giving it a unique ID
-/// @param job Job to be registered and given an ID
-/// @param paused Whether or not the program is currently paused
-/// @return A globally unique, monotonically increasing ID
 int64_t Store::addAndRegisterNewJob(Job& job, bool paused)
 {
     auto id = initializeJobData(job, paused);
@@ -29,10 +25,6 @@ int64_t Store::addAndRegisterNewJob(Job& job, bool paused)
     return id;
 }
 
-/// @brief Assign a unique ID and job statuses to a job
-/// @param job Job to be given an ID
-/// @param paused Whether or not the program is currently paused
-/// @return A globally unique, monotinically increasing ID
 int64_t Store::initializeJobData(Job& job, bool paused)
 {
     const auto now = std::chrono::system_clock::now().time_since_epoch();
@@ -62,7 +54,6 @@ int64_t Store::initializeJobData(Job& job, bool paused)
     return spawnMicrosId;
 }
 
-/// @brief Sort all registered jobs in the store according to blocking status, priority, and ID
 void Store::sortJobs()
 {
     std::sort(pendingJobs.begin(), pendingJobs.end(), [](const Job& a, const Job& b) {
@@ -96,7 +87,6 @@ void Store::sortJobs()
     });
 }
 
-/// @brief Give all registered jobs a paused status, storing their previous statuses
 void Store::pauseJobs()
 {
     for (auto& job : pendingJobs)
@@ -106,7 +96,6 @@ void Store::pauseJobs()
     }
 }
 
-/// @brief Restore all registered paused jobs to their pre-paused statuses
 void Store::unpauseJobs()
 {
     for (auto& job : pendingJobs)
@@ -115,12 +104,6 @@ void Store::unpauseJobs()
     }
 }
 
-/// @brief Send as many jobs to the job executor as possible within the allotted time budget
-/// @param timeBudget Allotted time budget
-/// @param jobs Job pool to process
-/// @param c Access point for the job executor
-/// @param fJobDrainCriterion Criterion to determine if a job is ready for the executor
-/// @return Whether or not all jobs were sent to the executor within the time budget
 bool Store::timedJobDrain(const std::chrono::milliseconds&       timeBudget,
                           std::vector<Job>&                      jobs,
                           const Container&                       c,
@@ -183,8 +166,6 @@ bool Store::timedJobDrain(const std::chrono::milliseconds&       timeBudget,
     return jobs.size() == 0;
 }
 
-/// @brief Poll pending jobs for results and clear blockers and add child jobs as necessary
-/// @param paused Whether or not the program is currently paused
 void Store::processPendingJobResults(bool paused)
 {
     static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(1);
@@ -263,9 +244,6 @@ void Store::processPendingJobResults(bool paused)
     }
 }
 
-/// @brief Return a copy of all jobs that match a query criterion
-/// @param query Query criterion with which to filter jobs
-/// @return Filtered list of jobs meeting the query criterion
 std::vector<Job> Store::query(const QueryInput::QueryType& query)
 {
     std::vector<Job> queryResult;
@@ -329,13 +307,11 @@ size_t InitState::step(Store& s, const Container& c, DumpInput& i)
 size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
     LOG(debug) << "init wait heartbeat";
-    static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(700);
-    // static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(1);
-    LOG(debug) << "starting to";
+    static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(500);
     // Continue waiting if the init load is not ready
     if (s.pendingInitLoad.wait_for(kFutureCheckTimeout) != std::future_status::ready)
     {
-        LOG(debug) << "waiting";
+        LOG(debug) << "waiting for db init load";
         return InitWaitState::index();
     }
 
@@ -343,7 +319,7 @@ size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 
     if (std::holds_alternative<services::ErrorResult>(initLoadResult))
     {
-        // TODO log an error
+        // ^^^^ TODO log an error
         return RunningState::index();
     }
 
@@ -366,6 +342,7 @@ size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 
 size_t InitWaitState::step(Store& s, const Container& c, PushInput& i)
 {
+    LOG(debug) << "HMM"; // ^^^^^ TODO do we hit this??
     i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
     return InitWaitState::index();
 }

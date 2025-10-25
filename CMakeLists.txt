@@ -61,8 +61,8 @@ if (BUILD_TESTS)
     add_executable(test-jobqueue
         src/internal/common.cpp
         src/JobQueue.cpp
-        src/JobExecutorMock.cpp
-        src/JobDatabaseMock.cpp
+        src/mocks/JobExecutorMock.cpp
+        src/mocks/JobDatabaseMock.cpp
         tests/JobQueueTest.cpp
     )
     target_include_directories(test-jobqueue PUBLIC ${LIB_INCS})
