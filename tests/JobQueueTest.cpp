@@ -1,27 +1,18 @@
-#define BOOST_TEST_DYN_LINK
-#define BOOST_TEST_MODULE JobQueueTests
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wshadow"
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#define CATCH_CONFIG_MAIN
+#include <catch2/catch.hpp>
+#pragma GCC diagnostic pop
 
-#include <boost/test/unit_test.hpp>
 #include <mscpp/ServiceFactory.h>
 #include "orchestrator/JobQueue.h"
 
-BOOST_AUTO_TEST_SUITE(TestJobQueue)
-
-struct GlobalFixture
-{
-    GlobalFixture()
-    {
-        orchestrator::logger::init();
-    }
-    ~GlobalFixture() {}
-};
-
-BOOST_GLOBAL_FIXTURE(GlobalFixture);
-
-BOOST_AUTO_TEST_CASE(TestJQInit)
+TEST_CASE("TestJQInit")
 {
     using namespace orchestrator;
-    LOG(info) << "INIT";
+    LOG_WARN("INIT");
     using namespace orchestrator::job_executor;
     using namespace orchestrator::job_database;
     using namespace orchestrator::job_queue;
@@ -31,11 +22,11 @@ BOOST_AUTO_TEST_CASE(TestJQInit)
     std::this_thread::sleep_for(
         std::chrono::seconds(10)); // ^^^^ TODO replace with while loop waiting for certain state
 
-    LOG(debug) << "STOPPING";
+    LOG_WARN("STOPPING");
     factory.stop();
 }
 
-BOOST_AUTO_TEST_CASE(TestJQStore)
+TEST_CASE("TestJQStore")
 {
     using namespace orchestrator;
     using namespace aapis::orchestrator::v1;
@@ -46,59 +37,59 @@ BOOST_AUTO_TEST_CASE(TestJQStore)
 
     job1.priority = 1;
     int64_t id1   = store.addAndRegisterNewJob(job1, false);
-    BOOST_ASSERT(job1.status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(job1.status == JobStatus::JOB_STATUS_QUEUED);
 
     job2.priority = 0;
     int64_t id2   = store.addAndRegisterNewJob(job2, false);
-    BOOST_CHECK_NE(id1, id2);
-    BOOST_ASSERT(job2.status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(id1 != id2);
+    REQUIRE(job2.status == JobStatus::JOB_STATUS_QUEUED);
 
     job3.priority = 0;
     job3.independentBlockers.push_back(id1);
     job3.relevantBlockers.push_back(id2);
     int64_t id3 = store.addAndRegisterNewJob(job3, false);
-    BOOST_CHECK_NE(id2, id3);
-    BOOST_ASSERT(job3.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(id2 != id3);
+    REQUIRE(job3.status == JobStatus::JOB_STATUS_BLOCKED);
 
     job4.priority = 1;
     job4.relevantBlockers.push_back(id1);
     int64_t id4 = store.addAndRegisterNewJob(job4, false);
-    BOOST_CHECK_NE(id3, id4);
-    BOOST_ASSERT(job4.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(id3 != id4);
+    REQUIRE(job4.status == JobStatus::JOB_STATUS_BLOCKED);
 
     job5.priority = 5;
     int64_t id5   = store.addAndRegisterNewJob(job5, false);
-    BOOST_CHECK_NE(id4, id5);
-    BOOST_ASSERT(job5.status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(id4 != id5);
+    REQUIRE(job5.status == JobStatus::JOB_STATUS_QUEUED);
 
     job6.priority = 0;
     job6.independentBlockers.push_back(id5);
     int64_t id6 = store.addAndRegisterNewJob(job6, false);
-    BOOST_CHECK_NE(id5, id6);
-    BOOST_ASSERT(job6.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(id5 != id6);
+    REQUIRE(job6.status == JobStatus::JOB_STATUS_BLOCKED);
 
     store.sortJobs();
 
     // ^^^^ TODO check jobs order, then sort and check order again...use queryInput to get order
 
     store.pauseJobs();
-    BOOST_ASSERT(job1.status == JobStatus::JOB_STATUS_PAUSED);
-    BOOST_ASSERT(job2.status == JobStatus::JOB_STATUS_PAUSED);
-    BOOST_ASSERT(job3.status == JobStatus::JOB_STATUS_PAUSED);
-    BOOST_ASSERT(job4.status == JobStatus::JOB_STATUS_PAUSED);
-    BOOST_ASSERT(job5.status == JobStatus::JOB_STATUS_PAUSED);
-    BOOST_ASSERT(job6.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(job1.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(job2.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(job3.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(job4.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(job5.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(job6.status == JobStatus::JOB_STATUS_PAUSED);
 
     store.unpauseJobs();
-    BOOST_ASSERT(job1.status == JobStatus::JOB_STATUS_QUEUED);
-    BOOST_ASSERT(job2.status == JobStatus::JOB_STATUS_QUEUED);
-    BOOST_ASSERT(job3.status == JobStatus::JOB_STATUS_BLOCKED);
-    BOOST_ASSERT(job4.status == JobStatus::JOB_STATUS_BLOCKED);
-    BOOST_ASSERT(job5.status == JobStatus::JOB_STATUS_QUEUED);
-    BOOST_ASSERT(job6.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(job1.status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(job2.status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(job3.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(job4.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(job5.status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(job6.status == JobStatus::JOB_STATUS_BLOCKED);
 }
 
-BOOST_AUTO_TEST_CASE(TestJQInsertionIds)
+TEST_CASE("TestJQInsertionIds")
 {
     using namespace orchestrator;
     using namespace orchestrator::job_executor;
@@ -108,7 +99,7 @@ BOOST_AUTO_TEST_CASE(TestJQInsertionIds)
     services::ServiceFactory<JobDatabase, JobExecutor, JobQueue> factory;
 
     std::this_thread::sleep_for(std::chrono::seconds(6));
-    LOG(debug) << "TEST 2";
+    LOG_DEBUG("TEST 2");
     // static constexpr uint32_t numInsertions = 1000;
     static constexpr uint32_t numInsertions = 10;
     int64_t                   prevId        = 0;
@@ -117,54 +108,52 @@ BOOST_AUTO_TEST_CASE(TestJQInsertionIds)
         auto pushInput  = PushInput();
         pushInput.job   = Job();
         auto pushFuture = pushInput.getFuture();
-        LOG(debug) << "hm";
-        BOOST_ASSERT(factory.get<JobQueue>()->sendInput(std::move(pushInput)));
-        LOG(debug) << "lets";
+        LOG_DEBUG("hm");
+        REQUIRE(factory.get<JobQueue>()->sendInput(std::move(pushInput)));
+        LOG_DEBUG("lets");
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        LOG(debug) << "wait";
+        LOG_DEBUG("wait");
         auto pushResult = pushFuture.get();
-        LOG(debug) << "assert check incoming";
-        BOOST_ASSERT(std::holds_alternative<result::JobIdResult>(pushResult));
-        LOG(debug) << "made it!"; // ^^^^ ?
+        LOG_DEBUG("assert check incoming");
+        REQUIRE(std::holds_alternative<result::JobIdResult>(pushResult));
+        LOG_DEBUG("made it!"); // ^^^^ ?
         int64_t newId = std::get<result::JobIdResult>(pushResult).id;
-        BOOST_CHECK_NE(newId, prevId);
+        REQUIRE(newId != prevId);
         prevId = newId;
     }
 
     factory.stop();
 }
 
-BOOST_AUTO_TEST_CASE(TestJQInitHeartbeat) {}
-BOOST_AUTO_TEST_CASE(TestJQInitPush) {}
-BOOST_AUTO_TEST_CASE(TestJQInitQuery) {}
-BOOST_AUTO_TEST_CASE(TestJQInitTogglePause) {}
-BOOST_AUTO_TEST_CASE(TestJQInitDump) {}
+TEST_CASE("TestJQInitHeartbeat") {}
+TEST_CASE("TestJQInitPush") {}
+TEST_CASE("TestJQInitQuery") {}
+TEST_CASE("TestJQInitTogglePause") {}
+TEST_CASE("TestJQInitDump") {}
 
-BOOST_AUTO_TEST_CASE(TestJQInitWaitHeartbeat) {}
-BOOST_AUTO_TEST_CASE(TestJQInitWaitPush) {}
-BOOST_AUTO_TEST_CASE(TestJQInitWaitQuery) {}
-BOOST_AUTO_TEST_CASE(TestJQInitWaitTogglePause) {}
-BOOST_AUTO_TEST_CASE(TestJQInitWaitDump) {}
+TEST_CASE("TestJQInitWaitHeartbeat") {}
+TEST_CASE("TestJQInitWaitPush") {}
+TEST_CASE("TestJQInitWaitQuery") {}
+TEST_CASE("TestJQInitWaitTogglePause") {}
+TEST_CASE("TestJQInitWaitDump") {}
 
-BOOST_AUTO_TEST_CASE(TestJQInitFinalWaitHeartbeat) {}
-BOOST_AUTO_TEST_CASE(TestJQInitFinalWaitPush) {}
-BOOST_AUTO_TEST_CASE(TestJQInitFinalWaitQuery) {}
-BOOST_AUTO_TEST_CASE(TestJQInitFinalWaitTogglePause) {}
-BOOST_AUTO_TEST_CASE(TestJQInitFinalWaitDump) {}
+TEST_CASE("TestJQInitFinalWaitHeartbeat") {}
+TEST_CASE("TestJQInitFinalWaitPush") {}
+TEST_CASE("TestJQInitFinalWaitQuery") {}
+TEST_CASE("TestJQInitFinalWaitTogglePause") {}
+TEST_CASE("TestJQInitFinalWaitDump") {}
 
-BOOST_AUTO_TEST_CASE(TestJQRunningHeartbeat) {}
-BOOST_AUTO_TEST_CASE(TestJQRunningPush) {}
-BOOST_AUTO_TEST_CASE(TestJQRunningQuery) {}
-BOOST_AUTO_TEST_CASE(TestJQRunningTogglePause) {}
-BOOST_AUTO_TEST_CASE(TestJQRunningDump) {}
+TEST_CASE("TestJQRunningHeartbeat") {}
+TEST_CASE("TestJQRunningPush") {}
+TEST_CASE("TestJQRunningQuery") {}
+TEST_CASE("TestJQRunningTogglePause") {}
+TEST_CASE("TestJQRunningDump") {}
 
-BOOST_AUTO_TEST_CASE(TestJQPausedHeartbeat) {}
-BOOST_AUTO_TEST_CASE(TestJQPausedPush) {}
-BOOST_AUTO_TEST_CASE(TestJQPausedQuery) {}
-BOOST_AUTO_TEST_CASE(TestJQPausedTogglePause) {}
-BOOST_AUTO_TEST_CASE(TestJQPausedDump) {}
+TEST_CASE("TestJQPausedHeartbeat") {}
+TEST_CASE("TestJQPausedPush") {}
+TEST_CASE("TestJQPausedQuery") {}
+TEST_CASE("TestJQPausedTogglePause") {}
+TEST_CASE("TestJQPausedDump") {}
 // ^^^^ TODO unit test for each of the 25 state functions, add the docstrings as you go
 
 // ^^^^ TODO "integration-level" test
-
-BOOST_AUTO_TEST_SUITE_END()

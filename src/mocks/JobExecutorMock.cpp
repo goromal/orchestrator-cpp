@@ -6,11 +6,6 @@ namespace orchestrator
 namespace job_executor
 {
 
-const std::string JobExecutor::name() const
-{
-    return "JobExecutorMock";
-}
-
 size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
     return 0;

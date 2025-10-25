@@ -262,14 +262,8 @@ std::vector<Job> Store::query(const QueryInput::QueryType& query)
     return queryResult;
 }
 
-const std::string JobQueue::name() const
-{
-    return "JobQueue";
-}
-
 size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    LOG(debug) << "init heartbeat";
     // Shoot off a load data request to the database, then move on to the waiting state
     job_database::LoadQueueData loadRequest;
     s.pendingInitLoad = std::move(loadRequest.getFuture());
@@ -279,7 +273,6 @@ size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 
 size_t InitState::step(Store& s, const Container& c, PushInput& i)
 {
-    LOG(debug) << "HM"; // ^^^^
     i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
     return InitState::index();
 }
@@ -306,12 +299,11 @@ size_t InitState::step(Store& s, const Container& c, DumpInput& i)
 
 size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    LOG(debug) << "init wait heartbeat";
     static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(500);
     // Continue waiting if the init load is not ready
     if (s.pendingInitLoad.wait_for(kFutureCheckTimeout) != std::future_status::ready)
     {
-        LOG(debug) << "waiting for db init load";
+        LOG_DEBUG("waiting for db init load");
         return InitWaitState::index();
     }
 
@@ -319,7 +311,7 @@ size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 
     if (std::holds_alternative<services::ErrorResult>(initLoadResult))
     {
-        // ^^^^ TODO log an error
+        LOG_ERROR("Failed to load initial state from Database");
         return RunningState::index();
     }
 
@@ -342,7 +334,6 @@ size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 
 size_t InitWaitState::step(Store& s, const Container& c, PushInput& i)
 {
-    LOG(debug) << "HMM"; // ^^^^^ TODO do we hit this??
     i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
     return InitWaitState::index();
 }
@@ -369,7 +360,6 @@ size_t InitWaitState::step(Store& s, const Container& c, DumpInput& i)
 
 size_t InitFinalWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    LOG(debug) << "init final wait heartbeat";
     // There's a lot going on in this step, so time things to ensure we can fall within our time budget
     static constexpr std::chrono::milliseconds kCheckFuturesBudget = std::chrono::milliseconds(950);
 
@@ -410,7 +400,6 @@ size_t InitFinalWaitState::step(Store& s, const Container& c, DumpInput& i)
 
 size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
 {
-    LOG(debug) << "running heartbeat";
     // There's a lot going on in this step, so time things to ensure we can fall within our time budget
     static constexpr std::chrono::milliseconds kCheckFuturesBudget = std::chrono::milliseconds(900);
 

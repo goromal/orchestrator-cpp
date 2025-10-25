@@ -1,6 +1,6 @@
 let
   pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/refs/tags/v6.23.6.tar.gz"))
+    ("https://github.com/goromal/anixpkgs/archive/refs/heads/dev/cpp-goodness.tar.gz"))
     { };
 in with pkgs;
 mkShell {
@@ -10,5 +10,7 @@ mkShell {
     mscpp
     aapis-cpp
     protobuf
+    spdlog
+    catch2
   ];
 }

@@ -11,8 +11,8 @@
 #include <mscpp/StateSet.h>
 #include <mscpp/MicroService.h>
 #include <mscpp/MicroServiceContainer.h>
+#include <mscpp/Logging.h>
 
-#include "orchestrator/internal/common.h"
 #include "orchestrator/Result.h"
 #include "orchestrator/Job.h"
 
@@ -24,6 +24,8 @@ namespace orchestrator
 
 namespace job_queue
 {
+
+inline constexpr char Name[] = "JobQueue";
 
 struct HeartbeatInput : public services::Input<HeartbeatInput, result::EmptyResult, 0, 1000>
 {
@@ -161,13 +163,12 @@ struct PausedState : public services::State<PausedState, 4>
 
 using States = services::StateSet<InitState, InitWaitState, InitFinalWaitState, RunningState, PausedState>;
 
-using JobQueueBase = services::MicroService<Store, Container, States, Inputs>;
+using JobQueueBase = services::MicroService<Name, Store, Container, States, Inputs>;
 
 class JobQueue : public JobQueueBase
 {
 public:
     JobQueue(const Container& container) : JobQueueBase(container) {}
-    const std::string name() const override;
 };
 
 } // namespace job_queue

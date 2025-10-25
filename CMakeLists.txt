@@ -33,17 +33,23 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 
 find_package(mscpp REQUIRED)
-find_package(Boost REQUIRED COMPONENTS program_options log log_setup thread system date_time filesystem)
+find_package(spdlog REQUIRED)
+find_package(Catch2 REQUIRED)
+find_package(Boost REQUIRED COMPONENTS program_options thread system date_time filesystem)
 
 set(LIB_DEPS mscpp protobuf)
 set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 
 add_library(${PROJ_NAME}
-  src/internal/common.cpp
   src/JobQueue.cpp
 )
 target_include_directories(${PROJ_NAME} PUBLIC ${LIB_INCS})
 target_link_libraries(${PROJ_NAME} PUBLIC ${LIB_DEPS})
+target_compile_definitions(${PROJ_NAME} INTERFACE
+    $<$<CONFIG:Debug>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE>
+    $<$<CONFIG:RelWithDebInfo>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>
+    $<$<CONFIG:Release>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_WARN>
+)
 
 add_executable(${PROJ_NAME}d
   src/main.cpp
@@ -59,14 +65,13 @@ target_link_libraries(${PROJ_NAME}d
 
 if (BUILD_TESTS)
     add_executable(test-jobqueue
-        src/internal/common.cpp
         src/JobQueue.cpp
         src/mocks/JobExecutorMock.cpp
         src/mocks/JobDatabaseMock.cpp
         tests/JobQueueTest.cpp
     )
     target_include_directories(test-jobqueue PUBLIC ${LIB_INCS})
-    target_link_libraries(test-jobqueue boost_unit_test_framework ${Boost_LIBRARIES} ${LIB_DEPS})
+    target_link_libraries(test-jobqueue Catch2::Catch2 ${Boost_LIBRARIES} ${LIB_DEPS})
     add_test(NAME test-jobqueue COMMAND test-jobqueue)
 
     add_custom_command(
@@ -76,6 +81,10 @@ if (BUILD_TESTS)
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
         COMMAND test-jobqueue
     )
+
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(test-jobqueue)
 endif()
 
 include(CMakePackageConfigHelpers)

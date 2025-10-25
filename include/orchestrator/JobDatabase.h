@@ -10,8 +10,8 @@
 #include <mscpp/StateSet.h>
 #include <mscpp/MicroService.h>
 #include <mscpp/MicroServiceContainer.h>
+#include <mscpp/Logging.h>
 
-#include "orchestrator/internal/common.h"
 #include "orchestrator/Result.h"
 #include "orchestrator/Job.h"
 
@@ -20,6 +20,8 @@ namespace orchestrator
 
 namespace job_database
 {
+
+inline constexpr char Name[] = "JobDatabase";
 
 struct HeartbeatInput : public services::Input<HeartbeatInput, result::EmptyResult, 0, 1000>
 {
@@ -53,13 +55,12 @@ struct ForeverState : public services::State<ForeverState, 0>
 
 using States = services::StateSet<ForeverState>;
 
-using JobDatabaseBase = services::MicroService<Store, Container, States, Inputs>;
+using JobDatabaseBase = services::MicroService<Name, Store, Container, States, Inputs>;
 
 class JobDatabase : public JobDatabaseBase
 {
 public:
     JobDatabase(const Container& container) : JobDatabaseBase(container) {}
-    const std::string name() const override;
 };
 
 } // namespace job_database
