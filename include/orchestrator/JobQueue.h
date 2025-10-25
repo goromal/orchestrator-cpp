@@ -38,10 +38,10 @@ struct PushInput : public services::Input<PushInput, result::JobIdResult, 0, 100
 
 struct QueryInput : public services::Input<QueryInput, result::JobsListResult, 1, 10>
 {
-    typedef struct GetAllQueuedJobs
+    struct GetAllQueuedJobs
     {
     };
-    typedef struct GetJobsAtPriorityLevel
+    struct GetJobsAtPriorityLevel
     {
         int64_t priority;
     };

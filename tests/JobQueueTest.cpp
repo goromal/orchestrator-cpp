@@ -99,7 +99,7 @@ TEST_CASE("TestJQInsertionIds")
     services::ServiceFactory<JobDatabase, JobExecutor, JobQueue> factory;
 
     std::this_thread::sleep_for(std::chrono::seconds(6));
-    LOG_DEBUG("TEST 2");
+    LOG_WARN("TEST 2");
     // static constexpr uint32_t numInsertions = 1000;
     static constexpr uint32_t numInsertions = 10;
     int64_t                   prevId        = 0;
@@ -108,15 +108,15 @@ TEST_CASE("TestJQInsertionIds")
         auto pushInput  = PushInput();
         pushInput.job   = Job();
         auto pushFuture = pushInput.getFuture();
-        LOG_DEBUG("hm");
+        LOG_WARN("hm");
         REQUIRE(factory.get<JobQueue>()->sendInput(std::move(pushInput)));
-        LOG_DEBUG("lets");
+        LOG_WARN("lets");
         std::this_thread::sleep_for(std::chrono::seconds(2));
-        LOG_DEBUG("wait");
+        LOG_WARN("wait");
         auto pushResult = pushFuture.get();
-        LOG_DEBUG("assert check incoming");
+        LOG_WARN("assert check incoming");
         REQUIRE(std::holds_alternative<result::JobIdResult>(pushResult));
-        LOG_DEBUG("made it!"); // ^^^^ ?
+        LOG_WARN("made it!"); // ^^^^ ?
         int64_t newId = std::get<result::JobIdResult>(pushResult).id;
         REQUIRE(newId != prevId);
         prevId = newId;

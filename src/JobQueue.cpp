@@ -274,6 +274,7 @@ size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
 size_t InitState::step(Store& s, const Container& c, PushInput& i)
 {
     i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
+    LOG_WARN("Uh oh");
     return InitState::index();
 }
 
@@ -303,7 +304,7 @@ size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
     // Continue waiting if the init load is not ready
     if (s.pendingInitLoad.wait_for(kFutureCheckTimeout) != std::future_status::ready)
     {
-        LOG_DEBUG("waiting for db init load");
+        LOG_WARN("waiting for db init load");
         return InitWaitState::index();
     }
 
@@ -335,6 +336,7 @@ size_t InitWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 size_t InitWaitState::step(Store& s, const Container& c, PushInput& i)
 {
     i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
+    LOG_WARN("Uh oh");
     return InitWaitState::index();
 }
 
@@ -375,6 +377,7 @@ size_t InitFinalWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
 size_t InitFinalWaitState::step(Store& s, const Container& c, PushInput& i)
 {
     i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
+    LOG_WARN("Uh oh");
     return InitFinalWaitState::index();
 }
 
