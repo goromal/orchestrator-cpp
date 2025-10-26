@@ -301,7 +301,6 @@ TEST_CASE("TestJQInitWaitDump")
     }
 }
 
-TEST_CASE("TestJQInitFinalWaitHeartbeat") {}
 TEST_CASE("TestJQInitFinalWaitPush") {}
 TEST_CASE("TestJQInitFinalWaitQuery") {}
 TEST_CASE("TestJQInitFinalWaitTogglePause") {}
