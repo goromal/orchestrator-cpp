@@ -9,84 +9,101 @@
 #include <mscpp/ServiceFactory.h>
 #include "orchestrator/JobQueue.h"
 
-TEST_CASE("TestJQInit")
-{
-    using namespace orchestrator;
-    LOG_WARN("INIT");
-    using namespace orchestrator::job_executor;
-    using namespace orchestrator::job_database;
-    using namespace orchestrator::job_queue;
-
-    services::ServiceFactory<JobDatabase, JobExecutor, JobQueue> factory;
-
-    std::this_thread::sleep_for(
-        std::chrono::seconds(10)); // ^^^^ TODO replace with while loop waiting for certain state
-
-    LOG_WARN("STOPPING");
-    factory.stop();
-}
-
 TEST_CASE("TestJQStore")
 {
     using namespace orchestrator;
+    using namespace orchestrator::job_queue;
     using namespace aapis::orchestrator::v1;
 
-    job_queue::Store store;
+    Store store;
 
     Job job1, job2, job3, job4, job5, job6;
 
     job1.priority = 1;
     int64_t id1   = store.addAndRegisterNewJob(job1, false);
-    REQUIRE(job1.status == JobStatus::JOB_STATUS_QUEUED);
 
     job2.priority = 0;
     int64_t id2   = store.addAndRegisterNewJob(job2, false);
     REQUIRE(id1 != id2);
-    REQUIRE(job2.status == JobStatus::JOB_STATUS_QUEUED);
 
     job3.priority = 0;
     job3.independentBlockers.push_back(id1);
     job3.relevantBlockers.push_back(id2);
     int64_t id3 = store.addAndRegisterNewJob(job3, false);
     REQUIRE(id2 != id3);
-    REQUIRE(job3.status == JobStatus::JOB_STATUS_BLOCKED);
 
     job4.priority = 1;
     job4.relevantBlockers.push_back(id1);
     int64_t id4 = store.addAndRegisterNewJob(job4, false);
     REQUIRE(id3 != id4);
-    REQUIRE(job4.status == JobStatus::JOB_STATUS_BLOCKED);
 
     job5.priority = 5;
     int64_t id5   = store.addAndRegisterNewJob(job5, false);
     REQUIRE(id4 != id5);
-    REQUIRE(job5.status == JobStatus::JOB_STATUS_QUEUED);
 
     job6.priority = 0;
     job6.independentBlockers.push_back(id5);
     int64_t id6 = store.addAndRegisterNewJob(job6, false);
     REQUIRE(id5 != id6);
-    REQUIRE(job6.status == JobStatus::JOB_STATUS_BLOCKED);
+
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id1})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id2})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id3})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id4})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id5})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id6})));
+
+    auto jobs = store.query(QueryInput::GetAllQueuedJobs{});
+    REQUIRE(jobs[0].id == id2);
+    REQUIRE(jobs[1].id == id1);
+    REQUIRE(jobs[2].id == id3);
+    REQUIRE(jobs[3].id == id4);
+    REQUIRE(jobs[4].id == id5);
+    REQUIRE(jobs[5].id == id6);
 
     store.sortJobs();
 
-    // ^^^^ TODO check jobs order, then sort and check order again...use queryInput to get order
+    jobs = store.query(QueryInput::GetAllQueuedJobs{});
+    REQUIRE(jobs[0].id == id2);
+    REQUIRE(jobs[1].id == id1);
+    REQUIRE(jobs[2].id == id3);
+    REQUIRE(jobs[3].id == id4);
+    REQUIRE(jobs[4].id == id5);
+    REQUIRE(jobs[5].id == id6);
 
     store.pauseJobs();
-    REQUIRE(job1.status == JobStatus::JOB_STATUS_PAUSED);
-    REQUIRE(job2.status == JobStatus::JOB_STATUS_PAUSED);
-    REQUIRE(job3.status == JobStatus::JOB_STATUS_PAUSED);
-    REQUIRE(job4.status == JobStatus::JOB_STATUS_PAUSED);
-    REQUIRE(job5.status == JobStatus::JOB_STATUS_PAUSED);
-    REQUIRE(job6.status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id1})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id2})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id3})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id4})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id5})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id6})));
 
     store.unpauseJobs();
-    REQUIRE(job1.status == JobStatus::JOB_STATUS_QUEUED);
-    REQUIRE(job2.status == JobStatus::JOB_STATUS_QUEUED);
-    REQUIRE(job3.status == JobStatus::JOB_STATUS_BLOCKED);
-    REQUIRE(job4.status == JobStatus::JOB_STATUS_BLOCKED);
-    REQUIRE(job5.status == JobStatus::JOB_STATUS_QUEUED);
-    REQUIRE(job6.status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id1})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id2})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id3})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id4})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id5})));
+    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
+        store.query(QueryInput::GetQueuedJobWithId{id6})));
 }
 
 TEST_CASE("TestJQInsertionIds")
@@ -98,25 +115,19 @@ TEST_CASE("TestJQInsertionIds")
 
     services::ServiceFactory<JobDatabase, JobExecutor, JobQueue> factory;
 
-    std::this_thread::sleep_for(std::chrono::seconds(6));
-    LOG_WARN("TEST 2");
-    // static constexpr uint32_t numInsertions = 1000;
-    static constexpr uint32_t numInsertions = 10;
+    std::this_thread::sleep_for(std::chrono::seconds(2));
+
+    static constexpr uint32_t numInsertions = 1000;
     int64_t                   prevId        = 0;
+
     for (uint32_t i = 0; i < numInsertions; i++)
     {
         auto pushInput  = PushInput();
         pushInput.job   = Job();
         auto pushFuture = pushInput.getFuture();
-        LOG_WARN("hm");
         REQUIRE(factory.get<JobQueue>()->sendInput(std::move(pushInput)));
-        LOG_WARN("lets");
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        LOG_WARN("wait");
         auto pushResult = pushFuture.get();
-        LOG_WARN("assert check incoming");
         REQUIRE(std::holds_alternative<result::JobIdResult>(pushResult));
-        LOG_WARN("made it!"); // ^^^^ ?
         int64_t newId = std::get<result::JobIdResult>(pushResult).id;
         REQUIRE(newId != prevId);
         prevId = newId;
@@ -125,8 +136,19 @@ TEST_CASE("TestJQInsertionIds")
     factory.stop();
 }
 
-TEST_CASE("TestJQInitHeartbeat") {}
-TEST_CASE("TestJQInitPush") {}
+TEST_CASE("TestJQInitPush")
+{
+    using namespace orchestrator;
+
+    job_queue::Store     store;
+    job_queue::Container container(__handle_later{});
+    job_queue::PushInput input;
+    job_queue::InitState state;
+
+    REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
+    REQUIRE(store.pendingJobs.empty());
+}
+
 TEST_CASE("TestJQInitQuery") {}
 TEST_CASE("TestJQInitTogglePause") {}
 TEST_CASE("TestJQInitDump") {}

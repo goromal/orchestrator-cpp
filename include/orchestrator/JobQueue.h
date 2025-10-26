@@ -45,7 +45,11 @@ struct QueryInput : public services::Input<QueryInput, result::JobsListResult, 1
     {
         int64_t priority;
     };
-    using QueryType = std::variant<GetAllQueuedJobs, GetJobsAtPriorityLevel>;
+    struct GetQueuedJobWithId
+    {
+        int64_t id;
+    };
+    using QueryType = std::variant<GetAllQueuedJobs, GetJobsAtPriorityLevel, GetQueuedJobWithId>;
     QueryType query;
 };
 
@@ -73,7 +77,7 @@ struct Store // TODO clean up by making this a class to protect private members
     /// @param job Job to be registered and given an ID
     /// @param paused Whether or not the program is currently paused
     /// @return A globally unique, monotonically increasing ID
-    int64_t addAndRegisterNewJob(Job& job, bool paused);
+    int64_t addAndRegisterNewJob(Job job, bool paused);
 
     /// @brief Assign a unique ID and job statuses to a job
     /// @param job Job to be given an ID
@@ -114,21 +118,32 @@ struct Store // TODO clean up by making this a class to protect private members
 // Initial state in which any persistent memory is requested to be loaded
 struct InitState : public services::State<InitState, 0>
 {
+    /// @brief Kick off a request to load any pending jobs from disk
+    /// @param s Mutable store
+    /// @param c Container of other services
+    /// @param i Heartbeat input
+    /// @return State transition index
     size_t step(Store& s, const Container& c, HeartbeatInput& i);
-    size_t step(Store& s, const Container& c, PushInput& i);
-    size_t step(Store& s, const Container& c, QueryInput& i);
-    size_t step(Store& s, const Container& c, TogglePauseInput& i);
-    size_t step(Store& s, const Container& c, DumpInput& i);
+
+    /// @brief Safely reject any job push request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Job push input
+    /// @return State transition index
+    size_t step(Store& s, const Container&, PushInput& i);
+    size_t step(Store& s, const Container&, QueryInput& i);
+    size_t step(Store& s, const Container&, TogglePauseInput& i);
+    size_t step(Store& s, const Container&, DumpInput& i);
 };
 
 // Follow-on initial state in which persistent memory is actually loaded
 struct InitWaitState : public services::State<InitWaitState, 1>
 {
-    size_t step(Store& s, const Container& c, HeartbeatInput& i);
-    size_t step(Store& s, const Container& c, PushInput& i);
-    size_t step(Store& s, const Container& c, QueryInput& i);
-    size_t step(Store& s, const Container& c, TogglePauseInput& i);
-    size_t step(Store& s, const Container& c, DumpInput& i);
+    size_t step(Store& s, const Container&, HeartbeatInput& i);
+    size_t step(Store& s, const Container&, PushInput& i);
+    size_t step(Store& s, const Container&, QueryInput& i);
+    size_t step(Store& s, const Container&, TogglePauseInput& i);
+    size_t step(Store& s, const Container&, DumpInput& i);
 };
 
 // Final initial state in which formerly in-progress jobs are re-triggered

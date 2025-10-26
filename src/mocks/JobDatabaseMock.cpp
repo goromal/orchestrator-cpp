@@ -20,7 +20,7 @@ size_t ForeverState::step(Store& s, const Container& c, LoadQueueData& i)
 {
     // Queue up the load request and kick off asynchronous data loading
     s.loadRequest = std::move(i);
-    // i.setResult() ^^^^ TODO this is next for unlocking
+    s.loadRequest.value().setResult(result::JobQueueDataResult());
     return ForeverState::index();
 }
 

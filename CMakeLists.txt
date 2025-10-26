@@ -35,7 +35,6 @@ endif()
 find_package(mscpp REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(Catch2 REQUIRED)
-find_package(Boost REQUIRED COMPONENTS program_options thread system date_time filesystem)
 
 set(LIB_DEPS mscpp protobuf)
 set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
