@@ -131,8 +131,26 @@ struct InitState : public services::State<InitState, 0>
     /// @param i Job push input
     /// @return State transition index
     size_t step(Store& s, const Container&, PushInput& i);
+
+    /// @brief Safely reject any query request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Query input
+    /// @return State transition index
     size_t step(Store& s, const Container&, QueryInput& i);
+
+    /// @brief Safely reject any pause toggle request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Pause toggle input
+    /// @return State transition index
     size_t step(Store& s, const Container&, TogglePauseInput& i);
+
+    /// @brief Vacuously accept any dump request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Dump input
+    /// @return State transition index
     size_t step(Store& s, const Container&, DumpInput& i);
 };
 
@@ -140,9 +158,33 @@ struct InitState : public services::State<InitState, 0>
 struct InitWaitState : public services::State<InitWaitState, 1>
 {
     size_t step(Store& s, const Container&, HeartbeatInput& i);
+
+    /// @brief Safely reject any job push request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Job push input
+    /// @return State transition index
     size_t step(Store& s, const Container&, PushInput& i);
+
+    /// @brief Safely reject any query request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Query input
+    /// @return State transition index
     size_t step(Store& s, const Container&, QueryInput& i);
+
+    /// @brief Safely reject any pause toggle request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Pause toggle input
+    /// @return State transition index
     size_t step(Store& s, const Container&, TogglePauseInput& i);
+
+    /// @brief Vacuously accept any dump request while in the Init state
+    /// @param s Mutable store
+    /// @param _ Unused
+    /// @param i Dump input
+    /// @return State transition index
     size_t step(Store& s, const Container&, DumpInput& i);
 };
 

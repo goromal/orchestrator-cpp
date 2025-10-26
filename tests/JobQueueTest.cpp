@@ -149,15 +149,157 @@ TEST_CASE("TestJQInitPush")
     REQUIRE(store.pendingJobs.empty());
 }
 
-TEST_CASE("TestJQInitQuery") {}
-TEST_CASE("TestJQInitTogglePause") {}
-TEST_CASE("TestJQInitDump") {}
+TEST_CASE("TestJQInitQuery")
+{
+    using namespace orchestrator;
 
-TEST_CASE("TestJQInitWaitHeartbeat") {}
-TEST_CASE("TestJQInitWaitPush") {}
-TEST_CASE("TestJQInitWaitQuery") {}
-TEST_CASE("TestJQInitWaitTogglePause") {}
-TEST_CASE("TestJQInitWaitDump") {}
+    job_queue::Store                   store;
+    job_queue::Container               container(__handle_later{});
+    job_queue::QueryInput              input1{.query = job_queue::QueryInput::GetAllQueuedJobs{}};
+    job_queue::QueryInput              input2{.query = job_queue::QueryInput::GetJobsAtPriorityLevel{.priority = 0}};
+    job_queue::QueryInput              input3{.query = job_queue::QueryInput::GetQueuedJobWithId{.id = 0}};
+    std::vector<job_queue::QueryInput> inputs;
+    inputs.push_back(std::move(input1));
+    inputs.push_back(std::move(input2));
+    inputs.push_back(std::move(input3));
+    job_queue::InitState state;
+
+    for (auto& input : inputs)
+    {
+        auto future = input.getFuture();
+        REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
+        auto result = future.get();
+        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
+    }
+}
+
+TEST_CASE("TestJQInitTogglePause")
+{
+    using namespace orchestrator;
+
+    job_queue::Store                         store;
+    job_queue::Container                     container(__handle_later{});
+    job_queue::TogglePauseInput              input1, input2;
+    std::vector<job_queue::TogglePauseInput> inputs;
+    inputs.push_back(std::move(input1));
+    inputs.push_back(std::move(input2));
+    job_queue::InitState state;
+
+    for (auto& input : inputs)
+    {
+        auto future = input.getFuture();
+        REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
+        auto result = future.get();
+        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
+    }
+}
+
+TEST_CASE("TestJQInitDump")
+{
+    using namespace orchestrator;
+
+    job_queue::Store                  store;
+    job_queue::Container              container(__handle_later{});
+    job_queue::DumpInput              input1, input2;
+    std::vector<job_queue::DumpInput> inputs;
+    inputs.push_back(std::move(input1));
+    inputs.push_back(std::move(input2));
+    job_queue::InitState state;
+
+    for (auto& input : inputs)
+    {
+        auto future = input.getFuture();
+        REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
+        auto result = future.get();
+        REQUIRE(std::holds_alternative<result::BooleanResult>(result));
+        REQUIRE(std::get<result::BooleanResult>(result).result == true);
+    }
+}
+
+TEST_CASE("TestJQInitWaitHeartbeat")
+{
+    // ^^^^ TODO can do something fancy here with store future
+}
+
+TEST_CASE("TestJQInitWaitPush")
+{
+    using namespace orchestrator;
+
+    job_queue::Store         store;
+    job_queue::Container     container(__handle_later{});
+    job_queue::PushInput     input;
+    job_queue::InitWaitState state;
+
+    REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
+    REQUIRE(store.pendingJobs.empty());
+}
+
+TEST_CASE("TestJQInitWaitQuery")
+{
+    using namespace orchestrator;
+
+    job_queue::Store                   store;
+    job_queue::Container               container(__handle_later{});
+    job_queue::QueryInput              input1{.query = job_queue::QueryInput::GetAllQueuedJobs{}};
+    job_queue::QueryInput              input2{.query = job_queue::QueryInput::GetJobsAtPriorityLevel{.priority = 0}};
+    job_queue::QueryInput              input3{.query = job_queue::QueryInput::GetQueuedJobWithId{.id = 0}};
+    std::vector<job_queue::QueryInput> inputs;
+    inputs.push_back(std::move(input1));
+    inputs.push_back(std::move(input2));
+    inputs.push_back(std::move(input3));
+    job_queue::InitWaitState state;
+
+    for (auto& input : inputs)
+    {
+        auto future = input.getFuture();
+        REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
+        auto result = future.get();
+        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
+    }
+}
+
+TEST_CASE("TestJQInitWaitTogglePause")
+{
+    using namespace orchestrator;
+
+    job_queue::Store                         store;
+    job_queue::Container                     container(__handle_later{});
+    job_queue::TogglePauseInput              input1, input2;
+    std::vector<job_queue::TogglePauseInput> inputs;
+    inputs.push_back(std::move(input1));
+    inputs.push_back(std::move(input2));
+    job_queue::InitWaitState state;
+
+    for (auto& input : inputs)
+    {
+        auto future = input.getFuture();
+        REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
+        auto result = future.get();
+        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
+    }
+}
+
+TEST_CASE("TestJQInitWaitDump")
+{
+    using namespace orchestrator;
+
+    job_queue::Store                  store;
+    job_queue::Container              container(__handle_later{});
+    job_queue::DumpInput              input1, input2;
+    std::vector<job_queue::DumpInput> inputs;
+    inputs.push_back(std::move(input1));
+    inputs.push_back(std::move(input2));
+    job_queue::InitWaitState state;
+
+    for (auto& input : inputs)
+    {
+        auto future = input.getFuture();
+        REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
+        auto result = future.get();
+        REQUIRE(std::holds_alternative<result::BooleanResult>(result));
+        REQUIRE(std::get<result::BooleanResult>(result).result == true);
+    }
+}
 
 TEST_CASE("TestJQInitFinalWaitHeartbeat") {}
 TEST_CASE("TestJQInitFinalWaitPush") {}
