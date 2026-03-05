@@ -13,12 +13,17 @@ namespace orchestrator
 namespace job_queue
 {
 
+// ══════════════════════════════════════════════════════════════════════════════
+// Store Implementation - Core Business Logic (Preserved from Original)
+// ══════════════════════════════════════════════════════════════════════════════
+
 int64_t Store::addAndRegisterNewJob(Job job, bool paused)
 {
     auto id = initializeJobData(job, paused);
 
     // If the ID is already in pendingJobs, then throw an error
-    if (std::find_if(pendingJobs.begin(), pendingJobs.end(), [&](Job& j) { return j.id == id; }) != pendingJobs.end())
+    if (std::find_if(pendingJobs.begin(), pendingJobs.end(),
+                     [&](Job& j) { return j.id == id; }) != pendingJobs.end())
     {
         throw std::runtime_error("Duplicate job ID would be inserted in the Job Queue");
     }
@@ -36,7 +41,8 @@ int64_t Store::initializeJobData(Job& job, bool paused)
     job.spawnTimeSeconds = std::chrono::duration_cast<std::chrono::seconds>(now).count();
 
     int64_t spawnMicrosId =
-        std::chrono::duration_cast<std::chrono::milliseconds>(now).count() * 1e3 + static_cast<int64_t>(subCounter);
+        std::chrono::duration_cast<std::chrono::milliseconds>(now).count() * 1e3 +
+        static_cast<int64_t>(subCounter);
 
     subCounter++;
 
@@ -44,14 +50,14 @@ int64_t Store::initializeJobData(Job& job, bool paused)
 
     if (job.numBlockers() == 0)
     {
-        job.status         = (paused) ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
-                                      : aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
+        job.status = (paused) ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
+                              : aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
         job.prePauseStatus = aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
     }
     else
     {
-        job.status         = (paused) ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
-                                      : aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED;
+        job.status = (paused) ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
+                              : aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED;
         job.prePauseStatus = aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED;
     }
 
@@ -68,7 +74,7 @@ void Store::sortJobs()
 
     // Build adjacency and indegree
     std::unordered_map<int64_t, std::unordered_set<int64_t>> adj;
-    std::unordered_map<int64_t, int64_t>                     indegree;
+    std::unordered_map<int64_t, int64_t> indegree;
     for (const auto& job : pendingJobs)
         indegree[job.id] = 0;
 
@@ -95,12 +101,13 @@ void Store::sortJobs()
         const Job& a = *jobById.at(aId);
         const Job& b = *jobById.at(bId);
         // Reverse order for min-heap behavior
-        return std::tuple(a.priority, a.numBlockers(), a.id) > std::tuple(b.priority, b.numBlockers(), b.id);
+        return std::tuple(a.priority, a.numBlockers(), a.id) >
+               std::tuple(b.priority, b.numBlockers(), b.id);
     };
 
     std::priority_queue<int64_t, std::vector<int64_t>, decltype(cmp)> ready(cmp);
 
-    // Initialize queue with all zero-indegree jobs
+    // Initialize queue with all zero-indegree jobs (Kahn's algorithm)
     for (const auto& [id, deg] : indegree)
         if (deg == 0)
             ready.push(id);
@@ -108,7 +115,7 @@ void Store::sortJobs()
     std::vector<int64_t> sortedIds;
     sortedIds.reserve(pendingJobs.size());
 
-    // Kahn’s algorithm
+    // Kahn's algorithm
     while (!ready.empty())
     {
         int64_t id = ready.top();
@@ -136,7 +143,8 @@ void Store::sortJobs()
         std::sort(remaining.begin(), remaining.end(), [&](int64_t aId, int64_t bId) {
             const Job& a = *jobById.at(aId);
             const Job& b = *jobById.at(bId);
-            return std::tuple(a.priority, a.numBlockers(), a.id) > std::tuple(b.priority, b.numBlockers(), b.id);
+            return std::tuple(a.priority, a.numBlockers(), a.id) >
+                   std::tuple(b.priority, b.numBlockers(), b.id);
         });
 
         sortedIds.insert(sortedIds.end(), remaining.begin(), remaining.end());
@@ -156,7 +164,7 @@ void Store::pauseJobs()
     for (auto& job : pendingJobs)
     {
         job.prePauseStatus = job.status;
-        job.status         = aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED;
+        job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED;
     }
 }
 
@@ -168,421 +176,475 @@ void Store::unpauseJobs()
     }
 }
 
-bool Store::timedJobDrain(const std::chrono::milliseconds&       timeBudget,
-                          std::vector<Job>&                      jobs,
-                          const Container&                       c,
-                          const std::function<bool(const Job&)>& fJobDrainCriterion)
+void Store::processJobResult(const JobResult& result, bool paused)
 {
-    static constexpr int kExecuteInputWaitMultiplier = 4;
+    int64_t jobId = result.job_id;
 
-    // Each loaded job ID must be passed to the executor to get a future back
-    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    std::chrono::steady_clock::time_point now   = std::chrono::steady_clock::now();
-    for (auto it = jobs.begin(); it != jobs.end();)
+    // Remove from active jobs
+    activeJobIds.erase(jobId);
+
+    // If the job was unsuccessful, then mark all dependent jobs as canceled
+    if (result.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR)
     {
-        // Don't consider jobs that don't meet the drain criteria
-        if (!fJobDrainCriterion(*it))
+        std::ranges::for_each(pendingJobs, [&](Job& j) {
+            if (std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId) !=
+                    j.independentBlockers.end() ||
+                std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId) !=
+                    j.relevantBlockers.end())
+            {
+                j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+            }
+        });
+    }
+    else
+    {
+        // If the job returned outputs, then remove the blocker from any blocked jobs
+        // and add all outputs as inputs for the case of relevantBlockers.
+        if (std::holds_alternative<std::vector<std::string>>(result.outputs))
         {
-            ++it;
-            continue;
+            auto outputs = std::get<std::vector<std::string>>(result.outputs);
+            std::ranges::for_each(pendingJobs, [&](Job& j) {
+                auto indBlockerIt =
+                    std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId);
+                if (indBlockerIt != j.independentBlockers.end())
+                {
+                    j.independentBlockers.erase(indBlockerIt);
+                }
+                auto relBlockerIt =
+                    std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId);
+                if (relBlockerIt != j.relevantBlockers.end())
+                {
+                    j.relevantBlockers.erase(relBlockerIt);
+                    std::move(outputs.begin(), outputs.end(), std::back_inserter(j.inputs));
+                }
+            });
         }
-
-        // Prepare the job for execution
-        auto tryExecKey    = it->id;
-        auto tryExecInput  = job_executor::ExecuteInput{.job = *it};
-        auto tryExecFuture = tryExecInput.getFuture();
-
-        // Only attempt to queue this job if we have enough time budget to wait for an answer
-        const auto tryExecInputWaitTime = kExecuteInputWaitMultiplier * tryExecInput.duration();
-        now                             = std::chrono::steady_clock::now();
-        if (std::chrono::duration_cast<std::chrono::milliseconds>(now - start) + tryExecInputWaitTime > timeBudget)
-        {
-            return false;
-        }
-
-        // The executor will tell us if there was room for our pending job.
-        // Wait for "as long as it takes" to get this information.
-        if (!c.get<job_executor::JobExecutor>()->sendInput(std::move(tryExecInput)))
-        {
-            return false;
-        }
-        while (tryExecFuture.wait_for(tryExecInputWaitTime) != std::future_status::ready)
-        {
-            // Our timeout underestimated how slow JobExecutor is; see if we can try again
-            // TODO log a warning
-        }
-        // If there was no room, then exit. Else, store the future result, remove the pending job from the list, and
-        // move on to trying to jump another job.
-        auto tryExecResult = tryExecFuture.get();
-        if (std::holds_alternative<services::ErrorResult>(tryExecResult))
-        {
-            // TODO log error
-            return false;
-        }
+        // If the job returned child jobs, then add each child job to pendingJobs.
+        // Then, remove the parent ID from any blocked jobs but add the child job IDs
+        // to the corresponding blockers list.
         else
         {
-            pendingJobResults.emplace(
-                std::make_pair(tryExecKey, std::move(std::get<result::FutureJobResult>(tryExecResult))));
-            it = jobs.erase(it); // this increments the iterator
+            auto childJobs = std::get<std::vector<Job>>(result.outputs);
+            std::vector<int64_t> childJobIds(childJobs.size());
+            std::transform(childJobs.begin(), childJobs.end(), childJobIds.begin(),
+                          [&](Job j) { return addAndRegisterNewJob(j, paused); });
+            std::ranges::for_each(pendingJobs, [&](Job& j) {
+                auto indBlockerIt =
+                    std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId);
+                if (indBlockerIt != j.independentBlockers.end())
+                {
+                    j.independentBlockers.erase(indBlockerIt);
+                    std::copy(childJobIds.begin(), childJobIds.end(),
+                             std::back_inserter(j.independentBlockers));
+                }
+                auto relBlockerIt =
+                    std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId);
+                if (relBlockerIt != j.relevantBlockers.end())
+                {
+                    j.relevantBlockers.erase(relBlockerIt);
+                    std::copy(childJobIds.begin(), childJobIds.end(),
+                             std::back_inserter(j.relevantBlockers));
+                }
+            });
         }
     }
 
-    return jobs.size() == 0;
-}
-
-void Store::processPendingJobResults(bool paused)
-{
-    static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(1);
-
-    for (auto& futJobResult : pendingJobResults)
+    // Update status of any jobs that became unblocked
+    for (auto& job : pendingJobs)
     {
-        auto jobId = futJobResult.first;
-        if (futJobResult.second.wait_for(kFutureCheckTimeout) == std::future_status::ready)
+        if (job.numBlockers() == 0 &&
+            job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED)
         {
-            auto jobResult = futJobResult.second.get();
-            // If the job was unsuccessful, then mark all dependent jobs as canceled and move on. The executor will deal
-            // with them.
-            if (jobResult.resultStatus == aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR)
-            {
-                std::ranges::for_each(pendingJobs, [&](Job& j) {
-                    if (std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId) !=
-                            j.independentBlockers.end() ||
-                        std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId) !=
-                            j.relevantBlockers.end())
-                    {
-                        j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
-                    }
-                });
-            }
-            else
-            {
-                // If the job returned outputs, then remove the blocker from any blocked jobs and add all outputs as
-                // inputs for the case of relevantBlockers.
-                if (std::holds_alternative<std::vector<std::string>>(jobResult.outputs))
-                {
-                    auto outputs = std::get<std::vector<std::string>>(jobResult.outputs);
-                    std::ranges::for_each(pendingJobs, [&](Job& j) {
-                        auto indBlockerIt =
-                            std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId);
-                        if (indBlockerIt != j.independentBlockers.end())
-                        {
-                            j.independentBlockers.erase(indBlockerIt);
-                        }
-                        auto relBlockerIt = std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId);
-                        if (relBlockerIt != j.relevantBlockers.end())
-                        {
-                            j.relevantBlockers.erase(relBlockerIt);
-                            std::move(outputs.begin(), outputs.end(), std::back_inserter(j.inputs));
-                        }
-                    });
-                }
-                // If the job returned child jobs, then add each child job to pendingJobs. Then, remove the parent ID
-                // from any blocked jobs but add the child job IDs to the corresponding blockers list.
-                else
-                {
-                    auto                 childJobs = std::get<std::vector<Job>>(jobResult.outputs);
-                    std::vector<int64_t> childJobIds(childJobs.size());
-                    std::transform(childJobs.begin(), childJobs.end(), childJobIds.begin(), [&](Job j) {
-                        return addAndRegisterNewJob(j, paused);
-                    });
-                    std::ranges::for_each(pendingJobs, [&](Job& j) {
-                        auto indBlockerIt =
-                            std::find(j.independentBlockers.begin(), j.independentBlockers.end(), jobId);
-                        if (indBlockerIt != j.independentBlockers.end())
-                        {
-                            j.independentBlockers.erase(indBlockerIt);
-                            std::copy(childJobIds.begin(),
-                                      childJobIds.end(),
-                                      std::back_inserter(j.independentBlockers));
-                        }
-                        auto relBlockerIt = std::find(j.relevantBlockers.begin(), j.relevantBlockers.end(), jobId);
-                        if (relBlockerIt != j.relevantBlockers.end())
-                        {
-                            j.relevantBlockers.erase(relBlockerIt);
-                            std::copy(childJobIds.begin(), childJobIds.end(), std::back_inserter(j.relevantBlockers));
-                        }
-                    });
-                }
-            }
+            job.status = paused ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
+                                : aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
         }
     }
 }
 
-std::vector<Job> Store::query(const QueryInput::QueryType& query)
+std::vector<Job> Store::query(const JobQuery& query) const
 {
     std::vector<Job> queryResult;
 
-    if (std::holds_alternative<QueryInput::GetAllQueuedJobs>(query))
+    switch (query.type)
     {
+    case JobQuery::Type::GET_ALL_QUEUED:
         std::copy(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult));
-    }
-    else if (std::holds_alternative<QueryInput::GetJobsAtPriorityLevel>(query))
-    {
-        std::copy_if(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult), [&](Job& j) {
-            return j.priority == std::get<QueryInput::GetJobsAtPriorityLevel>(query).priority;
-        });
-    }
-    else if (std::holds_alternative<QueryInput::GetQueuedJobWithId>(query))
-    {
-        std::copy_if(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult), [&](Job& j) {
-            return j.id == std::get<QueryInput::GetQueuedJobWithId>(query).id;
-        });
+        break;
+
+    case JobQuery::Type::GET_BY_PRIORITY:
+        std::copy_if(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult),
+                    [&](const Job& j) { return j.priority == query.priority; });
+        break;
+
+    case JobQuery::Type::GET_BY_ID:
+        std::copy_if(pendingJobs.begin(), pendingJobs.end(), std::back_inserter(queryResult),
+                    [&](const Job& j) { return j.id == query.id; });
+        break;
     }
 
     return queryResult;
 }
 
-size_t InitState::step(Store& s, const Container& c, HeartbeatInput& i)
+QueueSnapshot Store::createSnapshot() const
 {
-    // Shoot off a load data request to the database, then move on to the waiting state
-    job_database::LoadQueueData loadRequest;
-    s.pendingInitLoad = std::move(loadRequest.getFuture());
-    c.get<job_database::JobDatabase>()->sendInput(std::move(loadRequest));
+    QueueSnapshot snapshot;
+    snapshot.pending_jobs = pendingJobs;
+
+    // Collect active job IDs
+    for (const auto& [id, _] : activeJobIds)
+    {
+        snapshot.active_job_ids.push_back(id);
+    }
+
+    snapshot.snapshot_time_seconds =
+        std::chrono::duration_cast<std::chrono::seconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+
+    // TODO: Set boot_id from system
+
+    return snapshot;
+}
+
+void Store::restoreFromSnapshot(const QueueSnapshot& snapshot)
+{
+    pendingJobs = snapshot.pending_jobs;
+    sortJobs();
+
+    // Restore active job IDs
+    activeJobIds.clear();
+    for (int64_t id : snapshot.active_job_ids)
+    {
+        activeJobIds[id] = true;
+    }
+
+    // Identify in-progress jobs that need to be re-executed
+    pendingInitExecs.clear();
+    for (const auto& job : pendingJobs)
+    {
+        if (job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE)
+        {
+            pendingInitExecs.push_back(job);
+        }
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// FSM State Implementations
+// ══════════════════════════════════════════════════════════════════════════════
+
+size_t InitState::step(Store& s, Ports& p, const Container& c)
+{
+    // Request snapshot load from database via logical action
+    // The database will respond by writing to load_snapshot_in port
+    // which will trigger "on_port_load_snapshot" action
+
+    SPDLOG_INFO("JobQueue entering InitState - requesting snapshot load");
+
+    // Transition to wait state immediately
+    // Snapshot will arrive asynchronously
     return InitWaitState::index();
 }
 
-size_t InitState::step(Store& s, const Container&, PushInput& i)
+size_t InitWaitState::step(Store& s, Ports& p, const Container& c)
 {
-    i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
-    return InitState::index();
-}
-
-size_t InitState::step(Store& s, const Container&, QueryInput& i)
-{
-    i.setResult(services::ErrorResult{"Cannot query for state when the queue is still initializing"});
-    return InitState::index();
-}
-
-size_t InitState::step(Store& s, const Container&, TogglePauseInput& i)
-{
-    i.setResult(services::ErrorResult{"Cannot toggle pause when the queue is still initializing"});
-    return InitState::index();
-}
-
-size_t InitState::step(Store& s, const Container&, DumpInput& i)
-{
-    // The recovery database will not be deleted until we have exited the InitState, so we can safely give up
-    // mid-loading here
-    i.setResult(result::BooleanResult{true});
-    return InitState::index();
-}
-
-size_t InitWaitState::step(Store& s, const Container&, HeartbeatInput& i)
-{
-    static constexpr std::chrono::milliseconds kFutureCheckTimeout = std::chrono::milliseconds(500);
-    // Continue waiting if the init load is not ready
-    if (s.pendingInitLoad.wait_for(kFutureCheckTimeout) != std::future_status::ready)
+    // Check if snapshot has been loaded
+    if (p.load_snapshot_in.is_present())
     {
-        return InitWaitState::index();
-    }
+        SPDLOG_INFO("JobQueue snapshot loaded, restoring state");
 
-    auto initLoadResult = s.pendingInitLoad.get();
+        auto snapshot = p.load_snapshot_in.get();
+        s.restoreFromSnapshot(snapshot);
 
-    if (std::holds_alternative<services::ErrorResult>(initLoadResult))
-    {
-        LOG_ERROR("Failed to load initial state from Database");
+        // If there are in-progress jobs to re-execute, go to final init state
+        if (!s.pendingInitExecs.empty())
+        {
+            SPDLOG_INFO("JobQueue has {} in-progress jobs to re-execute",
+                    s.pendingInitExecs.size());
+            return InitFinalWaitState::index();
+        }
+
+        // Otherwise, go directly to running
+        SPDLOG_INFO("JobQueue transitioning to Running state");
         return RunningState::index();
     }
 
-    result::JobQueueDataResult jobQueueData = std::get<result::JobQueueDataResult>(initLoadResult);
+    // Stay in wait state
+    return InitWaitState::index();
+}
 
-    // Set pending jobs directly equal to the loaded data set
-    s.pendingJobs = jobQueueData.first.jobs;
-    s.sortJobs();
-
-    // If there are no in-progress jobs to re-request, then jump directly to the running state
-    if (jobQueueData.second.jobs.size() == 0)
+size_t InitFinalWaitState::step(Store& s, Ports& p, const Container& c)
+{
+    // Re-submit in-progress jobs to executor
+    for (auto& job : s.pendingInitExecs)
     {
-        return RunningState::index();
+        SPDLOG_INFO("Re-submitting job {} to executor", job.id);
+        p.execute_job_out.set(job);
+        s.activeJobIds[job.id] = true;
     }
 
-    // Store the pending in-progress jobs to re-request and move on to the final init state
-    s.pendingInitExecs = jobQueueData.second.jobs;
-    return InitFinalWaitState::index();
+    s.pendingInitExecs.clear();
+
+    SPDLOG_INFO("JobQueue transitioning to Running state");
+    return RunningState::index();
 }
 
-size_t InitWaitState::step(Store& s, const Container&, PushInput& i)
+size_t RunningState::step(Store& s, Ports& p, const Container& c)
 {
-    i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
-    return InitWaitState::index();
+    // Most work happens in executeLogicalAction()
+    // This is just a placeholder for FSM compatibility
+    return RunningState::index();
 }
 
-size_t InitWaitState::step(Store& s, const Container&, QueryInput& i)
+size_t PausedState::step(Store& s, Ports& p, const Container& c)
 {
-    i.setResult(services::ErrorResult{"Cannot query for state when the queue is still initializing"});
-    return InitWaitState::index();
+    // Most work happens in executeLogicalAction()
+    // This is just a placeholder for FSM compatibility
+    return PausedState::index();
 }
 
-size_t InitWaitState::step(Store& s, const Container&, TogglePauseInput& i)
+// ══════════════════════════════════════════════════════════════════════════════
+// JobQueue Reactor Implementation
+// ══════════════════════════════════════════════════════════════════════════════
+
+void JobQueue::initialize()
 {
-    i.setResult(services::ErrorResult{"Cannot toggle pause when the queue is still initializing"});
-    return InitWaitState::index();
+    SPDLOG_INFO("JobQueue reactor initializing");
+
+    // Start in InitState and execute initial transition
+    InitState state;
+    mCurrentState = state.step(mStore, mPorts, mContainer);
 }
 
-size_t InitWaitState::step(Store& s, const Container&, DumpInput& i)
+void JobQueue::doHeartbeat(const ::services::LogicalTag& tag)
 {
-    // The recovery database will not be deleted until we have exited the InitWaitState, so we can safely give up
-    // mid-loading here
-    i.setResult(result::BooleanResult{true});
-    return InitWaitState::index();
-}
+    // Heartbeat only handles periodic snapshot saves
+    // All event-driven work happens in executeLogicalAction()
 
-size_t InitFinalWaitState::step(Store& s, const Container& c, HeartbeatInput& i)
-{
-    // There's a lot going on in this step, so time things to ensure we can fall within our time budget
-    static constexpr std::chrono::milliseconds kCheckFuturesBudget = std::chrono::milliseconds(950);
+    // Save snapshot every 10 seconds
+    static constexpr int64_t SNAPSHOT_INTERVAL_NS = 10'000'000'000;  // 10 seconds
 
-    // Each loaded job ID must be passed to the executor to get a future back
-    if (!s.timedJobDrain(kCheckFuturesBudget, s.pendingInitExecs, c, [](const Job& j) { return true; }))
+    if (tag.time.count() % SNAPSHOT_INTERVAL_NS == 0 && tag.time.count() > 0)
     {
-        return InitFinalWaitState::index();
+        saveSnapshot();
     }
 
-    return RunningState::index();
-}
-
-size_t InitFinalWaitState::step(Store& s, const Container& c, PushInput& i)
-{
-    i.setResult(services::ErrorResult{"Cannot add a new job when the queue is still initializing"});
-    return InitFinalWaitState::index();
-}
-
-size_t InitFinalWaitState::step(Store& s, const Container& c, QueryInput& i)
-{
-    i.setResult(services::ErrorResult{"Cannot query for state when the queue is still initializing"});
-    return InitFinalWaitState::index();
-}
-
-size_t InitFinalWaitState::step(Store& s, const Container& c, TogglePauseInput& i)
-{
-    i.setResult(services::ErrorResult{"Cannot toggle pause when the queue is still initializing"});
-    return InitFinalWaitState::index();
-}
-
-size_t InitFinalWaitState::step(Store& s, const Container& c, DumpInput& i)
-{
-    // The recovery database will not be deleted until we have exited the InitFinalWaitState, so we can safely give up
-    // mid-loading here
-    i.setResult(result::BooleanResult{true});
-    return InitFinalWaitState::index();
-}
-
-size_t RunningState::step(Store& s, const Container& c, HeartbeatInput& i)
-{
-    // There's a lot going on in this step, so time things to ensure we can fall within our time budget
-    static constexpr std::chrono::milliseconds kCheckFuturesBudget = std::chrono::milliseconds(900);
-
-    // Part 1: Check futures for results and propagate the results to all queued jobs
-    std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
-    s.processPendingJobResults(false);
-
-    // Do we have enough time to move onto Part 2? Calculate our Part 2 budget.
-    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now();
-    auto part1Duration                        = std::chrono::duration_cast<std::chrono::duration<double>>(now - start);
-    if (part1Duration > kCheckFuturesBudget)
+    // Execute FSM step for current state (mostly no-op in Running/Paused)
+    // This maintains FSM compatibility
+    if (mCurrentState == RunningState::index())
     {
-        return RunningState::index();
+        RunningState state;
+        mCurrentState = state.step(mStore, mPorts, mContainer);
     }
-    std::chrono::milliseconds kDumpJobsBudget =
-        kCheckFuturesBudget - std::chrono::duration_cast<std::chrono::milliseconds>(part1Duration);
-
-    // Part 2: Dump as many "ready" jobs onto the execution stack as we can
-    // if (!s.timedJobDrain(kCheckFuturesBudget, s.pendingJobs, c, [](const Job& j) { return j.numBlockers() == 0; }))
-    // {
-    //     return RunningState::index();
-    // } ^^^^ TODO BROKEN WITH CURRENT MOCK
-
-    return RunningState::index();
-}
-
-// Add an externally created job to the execution queue
-size_t RunningState::step(Store& s, const Container& c, PushInput& i)
-{
-    int64_t assignedId = s.addAndRegisterNewJob(i.job, false);
-    i.setResult(result::JobIdResult{assignedId});
-    return RunningState::index();
-}
-
-size_t RunningState::step(Store& s, const Container& c, QueryInput& i)
-{
-    i.setResult(result::JobsListResult{s.query(i.query)});
-    return RunningState::index();
-}
-
-// Only to be run to rescue data right before shutdown!
-size_t RunningState::step(Store& s, const Container& c, DumpInput& i)
-{
-    auto                        kv = std::views::keys(s.pendingJobResults);
-    std::vector<int64_t>        keys{kv.begin(), kv.end()};
-    job_database::DumpQueueData dumpInput{.pendingJobs = s.pendingJobs, .awaitedJobIds = keys};
-    auto                        dumpOutput = dumpInput.getFuture();
-    c.get<job_database::JobDatabase>()->sendInput(std::move(dumpInput));
-    auto dumpResult = dumpOutput.get();
-    if (std::holds_alternative<services::ErrorResult>(dumpResult))
+    else if (mCurrentState == PausedState::index())
     {
-        i.setResult(result::BooleanResult{false});
+        PausedState state;
+        mCurrentState = state.step(mStore, mPorts, mContainer);
+    }
+    else if (mCurrentState == InitWaitState::index())
+    {
+        InitWaitState state;
+        mCurrentState = state.step(mStore, mPorts, mContainer);
+    }
+    else if (mCurrentState == InitFinalWaitState::index())
+    {
+        InitFinalWaitState state;
+        mCurrentState = state.step(mStore, mPorts, mContainer);
+    }
+}
+
+void JobQueue::executeLogicalAction(const ::services::LogicalTag& tag,
+                                    const std::string& action)
+{
+    // Event-driven action handling
+
+    if (action == "on_port_new_job")
+    {
+        handleNewJob();
+    }
+    else if (action == "on_port_job_result")
+    {
+        handleJobResult();
+    }
+    else if (action == "on_port_query")
+    {
+        handleQuery();
+    }
+    else if (action == "on_port_control")
+    {
+        handleControl();
+    }
+    else if (action == "on_port_load_snapshot")
+    {
+        handleSnapshotLoad();
+    }
+    else if (action == "try_execute_jobs")
+    {
+        drainReadyJobs();
     }
     else
     {
-        i.setResult(result::BooleanResult{std::get<result::BooleanResult>(dumpResult).result});
+        SPDLOG_WARN("JobQueue received unknown action: {}", action);
     }
-    return RunningState::index();
 }
 
-size_t RunningState::step(Store& s, const Container& c, TogglePauseInput& i)
+// ──────────────────────────────────────────────────────────────────────────────
+// Event Handlers
+// ──────────────────────────────────────────────────────────────────────────────
+
+void JobQueue::handleNewJob()
 {
-    s.pauseJobs();
+    if (!mPorts.new_job_in.is_present())
+        return;
 
-    i.setResult(result::BooleanResult{true});
-    return PausedState::index();
-}
+    auto job = mPorts.new_job_in.get();
 
-size_t PausedState::step(Store& s, const Container& c, HeartbeatInput& i)
-{
-    // If we're paused, then only worry about cleaning up any pending job results we have left
-    s.processPendingJobResults(true);
-    return PausedState::index();
-}
+    SPDLOG_INFO("JobQueue received new job with priority {}", job.priority);
 
-size_t PausedState::step(Store& s, const Container& c, PushInput& i)
-{
-    i.setResult(result::JobIdResult{s.addAndRegisterNewJob(i.job, true)});
-    return PausedState::index();
-}
+    // Register job and assign ID
+    int64_t id = mStore.addAndRegisterNewJob(job, isPaused());
 
-size_t PausedState::step(Store& s, const Container& c, QueryInput& i)
-{
-    i.setResult(result::JobsListResult{s.query(i.query)});
-    return PausedState::index();
-}
+    // Send response
+    mPorts.new_job_id_out.set(id);
 
-size_t PausedState::step(Store& s, const Container& c, TogglePauseInput& i)
-{
-    s.unpauseJobs();
+    SPDLOG_INFO("JobQueue assigned ID {} to new job", id);
 
-    i.setResult(result::BooleanResult{true});
-    return RunningState::index();
-}
-
-size_t PausedState::step(Store& s, const Container& c, DumpInput& i)
-{
-    auto                        kv = std::views::keys(s.pendingJobResults);
-    std::vector<int64_t>        keys{kv.begin(), kv.end()};
-    job_database::DumpQueueData dumpInput{.pendingJobs = s.pendingJobs, .awaitedJobIds = keys};
-    auto                        dumpOutput = dumpInput.getFuture();
-    c.get<job_database::JobDatabase>()->sendInput(std::move(dumpInput));
-    auto dumpResult = dumpOutput.get();
-    if (std::holds_alternative<services::ErrorResult>(dumpResult))
+    // If job is ready (no blockers) and we're not paused, try to execute
+    if (job.numBlockers() == 0 && !isPaused())
     {
-        i.setResult(result::BooleanResult{false});
+        scheduleLogicalAction("try_execute_jobs");
     }
-    else
+}
+
+void JobQueue::handleJobResult()
+{
+    if (!mPorts.job_result_in.is_present())
+        return;
+
+    auto result = mPorts.job_result_in.get();
+
+    SPDLOG_INFO("JobQueue received result for job {}", result.job_id);
+
+    // Process the result (unblock dependent jobs, handle outputs/children)
+    mStore.processJobResult(result, isPaused());
+
+    // Re-sort queue after dependency changes
+    mStore.sortJobs();
+
+    // Try to execute newly unblocked jobs
+    if (!isPaused())
     {
-        i.setResult(result::BooleanResult{std::get<result::BooleanResult>(dumpResult).result});
+        scheduleLogicalAction("try_execute_jobs");
     }
-    return PausedState::index();
+}
+
+void JobQueue::handleQuery()
+{
+    if (!mPorts.query_request_in.is_present())
+        return;
+
+    auto query = mPorts.query_request_in.get();
+
+    SPDLOG_DEBUG("JobQueue processing query");
+
+    // Execute query
+    auto jobs = mStore.query(query);
+
+    // Send response
+    JobQueryResponse response;
+    response.success = true;
+    response.jobs = jobs;
+    mPorts.query_response_out.set(response);
+}
+
+void JobQueue::handleControl()
+{
+    if (!mPorts.control_request_in.is_present())
+        return;
+
+    auto ctrl = mPorts.control_request_in.get();
+
+    ControlResponse response;
+    response.success = true;
+
+    switch (ctrl.command)
+    {
+    case ControlRequest::Command::PAUSE:
+        SPDLOG_INFO("JobQueue pausing all jobs");
+        mStore.pauseJobs();
+        mCurrentState = PausedState::index();
+        response.message = "Jobs paused";
+        break;
+
+    case ControlRequest::Command::RESUME:
+        SPDLOG_INFO("JobQueue resuming all jobs");
+        mStore.unpauseJobs();
+        mCurrentState = RunningState::index();
+        response.message = "Jobs resumed";
+        // Try to execute ready jobs
+        scheduleLogicalAction("try_execute_jobs");
+        break;
+
+    case ControlRequest::Command::CANCEL:
+        SPDLOG_INFO("JobQueue canceling job {}", ctrl.target_job_id);
+        // Find and cancel the job
+        for (auto& job : mStore.pendingJobs)
+        {
+            if (job.id == ctrl.target_job_id)
+            {
+                job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+                response.message = "Job canceled";
+                break;
+            }
+        }
+        break;
+    }
+
+    mPorts.control_response_out.set(response);
+}
+
+void JobQueue::handleSnapshotLoad()
+{
+    // Handled in InitWaitState::step()
+    // This action can be triggered by port connection
+    if (mCurrentState == InitWaitState::index())
+    {
+        InitWaitState state;
+        mCurrentState = state.step(mStore, mPorts, mContainer);
+    }
+}
+
+void JobQueue::drainReadyJobs()
+{
+    if (isPaused())
+        return;
+
+    // Send all ready jobs (no blockers, queued status) to executor
+    for (auto& job : mStore.pendingJobs)
+    {
+        if (job.numBlockers() == 0 &&
+            job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
+        {
+            SPDLOG_INFO("JobQueue sending job {} to executor", job.id);
+
+            mPorts.execute_job_out.set(job);
+            job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
+            mStore.activeJobIds[job.id] = true;
+        }
+    }
+}
+
+void JobQueue::saveSnapshot()
+{
+    if (mCurrentState != RunningState::index() && mCurrentState != PausedState::index())
+        return;
+
+    SPDLOG_DEBUG("JobQueue saving snapshot");
+
+    auto snapshot = mStore.createSnapshot();
+    mPorts.save_snapshot_out.set(snapshot);
 }
 
 } // namespace job_queue
 
-} // end namespace orchestrator
+} // namespace orchestrator

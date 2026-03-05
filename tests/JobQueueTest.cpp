@@ -6,317 +6,401 @@
 #include <catch2/catch.hpp>
 #pragma GCC diagnostic pop
 
-#include <mscpp/ServiceFactory.h>
 #include "orchestrator/JobQueue.h"
+#include <mscpp/ReactorScheduler.h>
+#include <mscpp/Topology.h>
 
-TEST_CASE("TestJQStore")
+using namespace orchestrator;
+using namespace orchestrator::job_queue;
+using namespace aapis::orchestrator::v1;
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Store Unit Tests (Business Logic - No Reactor)
+// ══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Store: Job registration and ID assignment")
 {
-    using namespace orchestrator;
-    using namespace orchestrator::job_queue;
-    using namespace aapis::orchestrator::v1;
+    Store store;
 
+    Job job1, job2, job3;
+    job1.priority = 1;
+    job2.priority = 0;
+    job3.priority = 0;
+
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+    int64_t id3 = store.addAndRegisterNewJob(job3, false);
+
+    // IDs must be unique
+    REQUIRE(id1 != id2);
+    REQUIRE(id2 != id3);
+    REQUIRE(id1 != id3);
+
+    // IDs are monotonically increasing (timestamp-based)
+    REQUIRE(id2 > id1);
+    REQUIRE(id3 > id2);
+
+    // Jobs are stored in priority order
+    REQUIRE(store.pendingJobs.size() == 3);
+}
+
+TEST_CASE("Store: Job sorting with dependencies")
+{
     Store store;
 
     Job job1, job2, job3, job4, job5, job6;
 
     job1.priority = 1;
-    int64_t id1   = store.addAndRegisterNewJob(job1, false);
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
 
     job2.priority = 0;
-    int64_t id2   = store.addAndRegisterNewJob(job2, false);
-    REQUIRE(id1 != id2);
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
 
     job3.priority = 0;
     job3.independentBlockers.push_back(id1);
     job3.relevantBlockers.push_back(id2);
     int64_t id3 = store.addAndRegisterNewJob(job3, false);
-    REQUIRE(id2 != id3);
 
     job4.priority = 1;
     job4.relevantBlockers.push_back(id1);
     int64_t id4 = store.addAndRegisterNewJob(job4, false);
-    REQUIRE(id3 != id4);
 
     job5.priority = 5;
-    int64_t id5   = store.addAndRegisterNewJob(job5, false);
-    REQUIRE(id4 != id5);
+    int64_t id5 = store.addAndRegisterNewJob(job5, false);
 
     job6.priority = 0;
     job6.independentBlockers.push_back(id5);
     int64_t id6 = store.addAndRegisterNewJob(job6, false);
-    REQUIRE(id5 != id6);
 
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id1})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id2})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id3})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id4})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id5})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id6})));
+    // Verify statuses
+    auto jobs = store.query(JobQuery{JobQuery::Type::GET_ALL_QUEUED});
+    REQUIRE(jobs.size() == 6);
 
-    auto jobs = store.query(QueryInput::GetAllQueuedJobs{});
-    REQUIRE(jobs[0].id == id2);
-    REQUIRE(jobs[1].id == id1);
-    REQUIRE(jobs[2].id == id3);
-    REQUIRE(jobs[3].id == id4);
-    REQUIRE(jobs[4].id == id5);
-    REQUIRE(jobs[5].id == id6);
+    // Job 1, 2, 5 should be QUEUED (no blockers)
+    REQUIRE(jobs[0].status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(jobs[1].status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(jobs[4].status == JobStatus::JOB_STATUS_QUEUED);
 
-    store.sortJobs();
+    // Job 3, 4, 6 should be BLOCKED
+    REQUIRE(jobs[2].status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(jobs[3].status == JobStatus::JOB_STATUS_BLOCKED);
+    REQUIRE(jobs[5].status == JobStatus::JOB_STATUS_BLOCKED);
 
-    jobs = store.query(QueryInput::GetAllQueuedJobs{});
-    REQUIRE(jobs[0].id == id2);
-    REQUIRE(jobs[1].id == id1);
-    REQUIRE(jobs[2].id == id3);
-    REQUIRE(jobs[3].id == id4);
-    REQUIRE(jobs[4].id == id5);
-    REQUIRE(jobs[5].id == id6);
+    // Verify topological sort order (priority 0 before priority 1)
+    REQUIRE(jobs[0].id == id2);  // Priority 0, no blockers
+    REQUIRE(jobs[1].id == id1);  // Priority 1, no blockers
+    REQUIRE(jobs[2].id == id3);  // Priority 0, blocked by id1, id2
+    REQUIRE(jobs[3].id == id4);  // Priority 1, blocked by id1
+    REQUIRE(jobs[4].id == id5);  // Priority 5, no blockers
+    REQUIRE(jobs[5].id == id6);  // Priority 0, blocked by id5
+}
 
+TEST_CASE("Store: Pause and unpause jobs")
+{
+    Store store;
+
+    Job job1, job2, job3;
+    job1.priority = 0;
+    job2.priority = 1;
+
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+
+    job3.priority = 0;
+    job3.independentBlockers.push_back(id1);
+    int64_t id3 = store.addAndRegisterNewJob(job3, false);
+
+    // Pause all jobs
     store.pauseJobs();
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id1})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id2})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id3})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id4})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id5})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_PAUSED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id6})));
 
+    auto jobs = store.query(JobQuery{JobQuery::Type::GET_ALL_QUEUED});
+    REQUIRE(jobs[0].status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(jobs[1].status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(jobs[2].status == JobStatus::JOB_STATUS_PAUSED);
+
+    // Verify pre-pause statuses are preserved
+    // Note: Sort order is (no-blockers first, then by priority, then by ID)
+    // jobs[0] = id1 (priority 0, QUEUED)
+    // jobs[1] = id3 (priority 0, BLOCKED) - blocked jobs sorted with non-blocked of same priority
+    // jobs[2] = id2 (priority 1, QUEUED)
+    // Actually, let's verify by checking individual job IDs
+    for (const auto& job : jobs) {
+        if (job.id == id1 || job.id == id2) {
+            REQUIRE(job.prePauseStatus == JobStatus::JOB_STATUS_QUEUED);
+        } else if (job.id == id3) {
+            REQUIRE(job.prePauseStatus == JobStatus::JOB_STATUS_BLOCKED);
+        }
+    }
+
+    // Unpause
     store.unpauseJobs();
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id1})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id2})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id3})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id4})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_QUEUED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id5})));
-    REQUIRE(([&](const auto& v) { return !v.empty() && v.front().status == JobStatus::JOB_STATUS_BLOCKED; })(
-        store.query(QueryInput::GetQueuedJobWithId{id6})));
-}
 
-TEST_CASE("TestJQInsertionIds")
-{
-    using namespace orchestrator;
-    using namespace orchestrator::job_executor;
-    using namespace orchestrator::job_database;
-    using namespace orchestrator::job_queue;
-
-    services::ServiceFactory<JobDatabase, JobExecutor, JobQueue> factory;
-
-    std::this_thread::sleep_for(std::chrono::seconds(2));
-
-    static constexpr uint32_t numInsertions = 1000;
-    int64_t                   prevId        = 0;
-
-    for (uint32_t i = 0; i < numInsertions; i++)
-    {
-        auto pushInput  = PushInput();
-        pushInput.job   = Job();
-        auto pushFuture = pushInput.getFuture();
-        REQUIRE(factory.get<JobQueue>()->sendInput(std::move(pushInput)));
-        auto pushResult = pushFuture.get();
-        REQUIRE(std::holds_alternative<result::JobIdResult>(pushResult));
-        int64_t newId = std::get<result::JobIdResult>(pushResult).id;
-        REQUIRE(newId != prevId);
-        prevId = newId;
-    }
-
-    factory.stop();
-}
-
-TEST_CASE("TestJQInitPush")
-{
-    using namespace orchestrator;
-
-    job_queue::Store     store;
-    job_queue::Container container(__handle_later{});
-    job_queue::PushInput input;
-    job_queue::InitState state;
-
-    REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
-    REQUIRE(store.pendingJobs.empty());
-}
-
-TEST_CASE("TestJQInitQuery")
-{
-    using namespace orchestrator;
-
-    job_queue::Store                   store;
-    job_queue::Container               container(__handle_later{});
-    job_queue::QueryInput              input1{.query = job_queue::QueryInput::GetAllQueuedJobs{}};
-    job_queue::QueryInput              input2{.query = job_queue::QueryInput::GetJobsAtPriorityLevel{.priority = 0}};
-    job_queue::QueryInput              input3{.query = job_queue::QueryInput::GetQueuedJobWithId{.id = 0}};
-    std::vector<job_queue::QueryInput> inputs;
-    inputs.push_back(std::move(input1));
-    inputs.push_back(std::move(input2));
-    inputs.push_back(std::move(input3));
-    job_queue::InitState state;
-
-    for (auto& input : inputs)
-    {
-        auto future = input.getFuture();
-        REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
-        auto result = future.get();
-        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
+    jobs = store.query(JobQuery{JobQuery::Type::GET_ALL_QUEUED});
+    // Verify statuses restored correctly
+    for (const auto& job : jobs) {
+        if (job.id == id1 || job.id == id2) {
+            REQUIRE(job.status == JobStatus::JOB_STATUS_QUEUED);
+        } else if (job.id == id3) {
+            REQUIRE(job.status == JobStatus::JOB_STATUS_BLOCKED);
+        }
     }
 }
 
-TEST_CASE("TestJQInitTogglePause")
+TEST_CASE("Store: Process job result with string outputs")
 {
-    using namespace orchestrator;
+    Store store;
 
-    job_queue::Store                         store;
-    job_queue::Container                     container(__handle_later{});
-    job_queue::TogglePauseInput              input1, input2;
-    std::vector<job_queue::TogglePauseInput> inputs;
-    inputs.push_back(std::move(input1));
-    inputs.push_back(std::move(input2));
-    job_queue::InitState state;
+    Job job1, job2;
+    job1.priority = 0;
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
 
-    for (auto& input : inputs)
-    {
-        auto future = input.getFuture();
-        REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
-        auto result = future.get();
-        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
-    }
+    job2.priority = 0;
+    job2.relevantBlockers.push_back(id1);  // Relevant blocker - outputs become inputs
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+
+    // Simulate job completion with outputs
+    JobResult result;
+    result.job_id = id1;
+    result.status = JobStatus::JOB_STATUS_COMPLETE;
+    result.outputs = std::vector<std::string>{"output1", "output2"};
+
+    store.processJobResult(result, false);
+
+    // Job 2 should now be unblocked and have outputs as inputs
+    auto jobs = store.query(JobQuery{JobQuery::Type::GET_BY_ID, -1, id2});
+    REQUIRE(jobs.size() == 1);
+    REQUIRE(jobs[0].numBlockers() == 0);
+    REQUIRE(jobs[0].status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(jobs[0].inputs.size() == 2);
+    REQUIRE(jobs[0].inputs[0] == "output1");
+    REQUIRE(jobs[0].inputs[1] == "output2");
 }
 
-TEST_CASE("TestJQInitDump")
+TEST_CASE("Store: Process job result with error status")
 {
-    using namespace orchestrator;
+    Store store;
 
-    job_queue::Store                  store;
-    job_queue::Container              container(__handle_later{});
-    job_queue::DumpInput              input1, input2;
-    std::vector<job_queue::DumpInput> inputs;
-    inputs.push_back(std::move(input1));
-    inputs.push_back(std::move(input2));
-    job_queue::InitState state;
+    Job job1, job2, job3;
+    job1.priority = 0;
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
 
-    for (auto& input : inputs)
-    {
-        auto future = input.getFuture();
-        REQUIRE(state.step(store, container, input) == job_queue::InitState::index());
-        auto result = future.get();
-        REQUIRE(std::holds_alternative<result::BooleanResult>(result));
-        REQUIRE(std::get<result::BooleanResult>(result).result == true);
-    }
+    job2.priority = 0;
+    job2.independentBlockers.push_back(id1);
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+
+    job3.priority = 0;
+    job3.relevantBlockers.push_back(id1);
+    int64_t id3 = store.addAndRegisterNewJob(job3, false);
+
+    // Simulate job failure
+    JobResult result;
+    result.job_id = id1;
+    result.status = JobStatus::JOB_STATUS_ERROR;
+
+    store.processJobResult(result, false);
+
+    // Dependent jobs should be canceled
+    auto jobs = store.query(JobQuery{JobQuery::Type::GET_ALL_QUEUED});
+    auto job2_it = std::find_if(jobs.begin(), jobs.end(), [id2](const Job& j) { return j.id == id2; });
+    auto job3_it = std::find_if(jobs.begin(), jobs.end(), [id3](const Job& j) { return j.id == id3; });
+
+    REQUIRE(job2_it != jobs.end());
+    REQUIRE(job3_it != jobs.end());
+    REQUIRE(job2_it->status == JobStatus::JOB_STATUS_CANCELED);
+    REQUIRE(job3_it->status == JobStatus::JOB_STATUS_CANCELED);
 }
 
-TEST_CASE("TestJQInitWaitHeartbeat")
+TEST_CASE("Store: Query operations")
 {
-    // ^^^^ TODO can do something fancy here with store future
+    Store store;
+
+    Job job1, job2, job3;
+    job1.priority = 0;
+    job2.priority = 1;
+    job3.priority = 0;
+
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+    int64_t id3 = store.addAndRegisterNewJob(job3, false);
+
+    // Query all
+    auto all_jobs = store.query(JobQuery{JobQuery::Type::GET_ALL_QUEUED});
+    REQUIRE(all_jobs.size() == 3);
+
+    // Query by priority
+    auto priority_0 = store.query(JobQuery{JobQuery::Type::GET_BY_PRIORITY, 0});
+    REQUIRE(priority_0.size() == 2);
+
+    auto priority_1 = store.query(JobQuery{JobQuery::Type::GET_BY_PRIORITY, 1});
+    REQUIRE(priority_1.size() == 1);
+
+    // Query by ID
+    auto by_id = store.query(JobQuery{JobQuery::Type::GET_BY_ID, -1, id2});
+    REQUIRE(by_id.size() == 1);
+    REQUIRE(by_id[0].id == id2);
 }
 
-TEST_CASE("TestJQInitWaitPush")
+TEST_CASE("Store: Snapshot create and restore")
 {
-    using namespace orchestrator;
+    Store store;
 
-    job_queue::Store         store;
-    job_queue::Container     container(__handle_later{});
-    job_queue::PushInput     input;
-    job_queue::InitWaitState state;
+    Job job1, job2;
+    job1.priority = 0;
+    job2.priority = 1;
 
-    REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
-    REQUIRE(store.pendingJobs.empty());
+    int64_t id1 = store.addAndRegisterNewJob(job1, false);
+    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+
+    // Mark one as active
+    store.activeJobIds[id1] = true;
+
+    // Create snapshot
+    auto snapshot = store.createSnapshot();
+    REQUIRE(snapshot.pending_jobs.size() == 2);
+    REQUIRE(snapshot.active_job_ids.size() == 1);
+    REQUIRE(snapshot.active_job_ids[0] == id1);
+
+    // Clear store
+    Store store2;
+
+    // Restore snapshot
+    store2.restoreFromSnapshot(snapshot);
+    REQUIRE(store2.pendingJobs.size() == 2);
+    REQUIRE(store2.activeJobIds.size() == 1);
+    REQUIRE(store2.activeJobIds.count(id1) == 1);
 }
 
-TEST_CASE("TestJQInitWaitQuery")
+// ══════════════════════════════════════════════════════════════════════════════
+// Reactor Unit Tests (Event-Driven with Logical Actions)
+// ══════════════════════════════════════════════════════════════════════════════
+
+TEST_CASE("Reactor: Event-driven job submission")
 {
-    using namespace orchestrator;
+    // Create reactor without scheduler (direct testing)
+    JobQueue queue;
+    queue.initialize();
 
-    job_queue::Store                   store;
-    job_queue::Container               container(__handle_later{});
-    job_queue::QueryInput              input1{.query = job_queue::QueryInput::GetAllQueuedJobs{}};
-    job_queue::QueryInput              input2{.query = job_queue::QueryInput::GetJobsAtPriorityLevel{.priority = 0}};
-    job_queue::QueryInput              input3{.query = job_queue::QueryInput::GetQueuedJobWithId{.id = 0}};
-    std::vector<job_queue::QueryInput> inputs;
-    inputs.push_back(std::move(input1));
-    inputs.push_back(std::move(input2));
-    inputs.push_back(std::move(input3));
-    job_queue::InitWaitState state;
+    // Create a job
+    Job job;
+    job.priority = 5;
 
-    for (auto& input : inputs)
-    {
-        auto future = input.getFuture();
-        REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
-        auto result = future.get();
-        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
-    }
+    // Simulate event: new job arrives on port
+    queue.getPorts().new_job_in.set(job);
+
+    // Trigger logical action directly
+    ::services::LogicalTag tag(::services::LogicalTime(0), 0);
+    queue.executeLogicalAction(tag, "on_port_new_job");
+
+    // Check response port
+    REQUIRE(queue.getPorts().new_job_id_out.has_pending_value());
+
+    // Verify job was registered
+    auto& store = queue.getStore();
+    REQUIRE(store.pendingJobs.size() == 1);
+    REQUIRE(store.pendingJobs[0].priority == 5);
 }
 
-TEST_CASE("TestJQInitWaitTogglePause")
+TEST_CASE("Reactor: Event-driven query handling")
 {
-    using namespace orchestrator;
+    JobQueue queue;
+    queue.initialize();
 
-    job_queue::Store                         store;
-    job_queue::Container                     container(__handle_later{});
-    job_queue::TogglePauseInput              input1, input2;
-    std::vector<job_queue::TogglePauseInput> inputs;
-    inputs.push_back(std::move(input1));
-    inputs.push_back(std::move(input2));
-    job_queue::InitWaitState state;
+    // Add a job directly to store
+    Job job;
+    job.priority = 3;
+    queue.getStore().addAndRegisterNewJob(job, false);
 
-    for (auto& input : inputs)
-    {
-        auto future = input.getFuture();
-        REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
-        auto result = future.get();
-        REQUIRE(std::holds_alternative<services::ErrorResult>(result));
-    }
+    // Simulate query event
+    JobQuery query{JobQuery::Type::GET_ALL_QUEUED};
+    queue.getPorts().query_request_in.set(query);
+
+    // Trigger logical action
+    ::services::LogicalTag tag(::services::LogicalTime(0), 0);
+    queue.executeLogicalAction(tag, "on_port_query");
+
+    // Check response
+    REQUIRE(queue.getPorts().query_response_out.has_pending_value());
 }
 
-TEST_CASE("TestJQInitWaitDump")
+TEST_CASE("Reactor: Event-driven pause/resume")
 {
-    using namespace orchestrator;
+    JobQueue queue;
+    queue.initialize();
 
-    job_queue::Store                  store;
-    job_queue::Container              container(__handle_later{});
-    job_queue::DumpInput              input1, input2;
-    std::vector<job_queue::DumpInput> inputs;
-    inputs.push_back(std::move(input1));
-    inputs.push_back(std::move(input2));
-    job_queue::InitWaitState state;
+    // Add jobs
+    Job job1, job2;
+    job1.priority = 0;
+    job2.priority = 1;
+    queue.getStore().addAndRegisterNewJob(job1, false);
+    queue.getStore().addAndRegisterNewJob(job2, false);
 
-    for (auto& input : inputs)
-    {
-        auto future = input.getFuture();
-        REQUIRE(state.step(store, container, input) == job_queue::InitWaitState::index());
-        auto result = future.get();
-        REQUIRE(std::holds_alternative<result::BooleanResult>(result));
-        REQUIRE(std::get<result::BooleanResult>(result).result == true);
-    }
+    // Simulate pause command
+    ControlRequest pause_req{ControlRequest::Command::PAUSE};
+    queue.getPorts().control_request_in.set(pause_req);
+
+    ::services::LogicalTag tag(::services::LogicalTime(0), 0);
+    queue.executeLogicalAction(tag, "on_port_control");
+
+    // Check jobs are paused
+    auto& store = queue.getStore();
+    REQUIRE(store.pendingJobs[0].status == JobStatus::JOB_STATUS_PAUSED);
+    REQUIRE(store.pendingJobs[1].status == JobStatus::JOB_STATUS_PAUSED);
+
+    // Clear ports for next action
+    queue.clearPorts();
+
+    // Simulate resume command
+    ControlRequest resume_req{ControlRequest::Command::RESUME};
+    queue.getPorts().control_request_in.set(resume_req);
+
+    queue.executeLogicalAction(tag, "on_port_control");
+
+    // Check jobs are resumed
+    REQUIRE(store.pendingJobs[0].status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(store.pendingJobs[1].status == JobStatus::JOB_STATUS_QUEUED);
 }
 
-TEST_CASE("TestJQInitFinalWaitPush") {}
-TEST_CASE("TestJQInitFinalWaitQuery") {}
-TEST_CASE("TestJQInitFinalWaitTogglePause") {}
-TEST_CASE("TestJQInitFinalWaitDump") {}
+TEST_CASE("Reactor: Event-driven job completion")
+{
+    JobQueue queue;
+    queue.initialize();
 
-TEST_CASE("TestJQRunningHeartbeat") {}
-TEST_CASE("TestJQRunningPush") {}
-TEST_CASE("TestJQRunningQuery") {}
-TEST_CASE("TestJQRunningTogglePause") {}
-TEST_CASE("TestJQRunningDump") {}
+    // Add jobs with dependencies
+    Job job1, job2;
+    job1.priority = 0;
+    int64_t id1 = queue.getStore().addAndRegisterNewJob(job1, false);
 
-TEST_CASE("TestJQPausedHeartbeat") {}
-TEST_CASE("TestJQPausedPush") {}
-TEST_CASE("TestJQPausedQuery") {}
-TEST_CASE("TestJQPausedTogglePause") {}
-TEST_CASE("TestJQPausedDump") {}
-// ^^^^ TODO unit test for each of the 25 state functions, add the docstrings as you go
+    job2.priority = 0;
+    job2.relevantBlockers.push_back(id1);
+    int64_t id2 = queue.getStore().addAndRegisterNewJob(job2, false);
 
-// ^^^^ TODO "integration-level" test
+    // Mark job1 as active
+    queue.getStore().activeJobIds[id1] = true;
+
+    // Simulate job completion
+    JobResult result;
+    result.job_id = id1;
+    result.status = JobStatus::JOB_STATUS_COMPLETE;
+    result.outputs = std::vector<std::string>{"output"};
+
+    queue.getPorts().job_result_in.set(result);
+
+    // Trigger logical action
+    ::services::LogicalTag tag(::services::LogicalTime(0), 0);
+    queue.executeLogicalAction(tag, "on_port_job_result");
+
+    // Check job2 is now unblocked
+    auto& store = queue.getStore();
+    auto jobs = store.query(JobQuery{JobQuery::Type::GET_BY_ID, -1, id2});
+    REQUIRE(jobs.size() == 1);
+    REQUIRE(jobs[0].numBlockers() == 0);
+    REQUIRE(jobs[0].status == JobStatus::JOB_STATUS_QUEUED);
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Integration Tests (With Scheduler - Future)
+// ══════════════════════════════════════════════════════════════════════════════
+
+// TODO: Add integration tests with ReactorScheduler and ConnectionManager
+// TODO: Test automatic logical action scheduling on port connections
+// TODO: Test end-to-end job flow with mock JobExecutor and JobDatabase

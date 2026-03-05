@@ -41,6 +41,7 @@ set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFAC
 
 add_library(${PROJ_NAME}
   src/JobQueue.cpp
+  src/JobExecutor.cpp
 )
 target_include_directories(${PROJ_NAME} PUBLIC ${LIB_INCS})
 target_link_libraries(${PROJ_NAME} PUBLIC ${LIB_DEPS})
@@ -65,8 +66,9 @@ target_link_libraries(${PROJ_NAME}d
 if (BUILD_TESTS)
     add_executable(test-jobqueue
         src/JobQueue.cpp
-        src/mocks/JobExecutorMock.cpp
-        src/mocks/JobDatabaseMock.cpp
+        # Mocks removed - will be re-added in Stage 4 and 5
+        # src/mocks/JobExecutorMock.cpp
+        # src/mocks/JobDatabaseMock.cpp
         tests/JobQueueTest.cpp
     )
     target_include_directories(test-jobqueue PUBLIC ${LIB_INCS})
@@ -81,9 +83,27 @@ if (BUILD_TESTS)
         COMMAND test-jobqueue
     )
 
+    add_executable(test-jobexecutor
+        src/JobExecutor.cpp
+        src/JobQueue.cpp
+        tests/JobExecutorTest.cpp
+    )
+    target_include_directories(test-jobexecutor PUBLIC ${LIB_INCS})
+    target_link_libraries(test-jobexecutor Catch2::Catch2 ${Boost_LIBRARIES} ${LIB_DEPS})
+    add_test(NAME test-jobexecutor COMMAND test-jobexecutor)
+
+    add_custom_command(
+        TARGET test-jobexecutor
+        COMMENT "Run JobExecutor unit tests"
+        POST_BUILD
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMAND test-jobexecutor
+    )
+
     include(CTest)
     include(Catch)
     catch_discover_tests(test-jobqueue)
+    catch_discover_tests(test-jobexecutor)
 endif()
 
 include(CMakePackageConfigHelpers)

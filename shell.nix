@@ -1,6 +1,6 @@
 let
   pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/refs/heads/dev/cpp-goodness.tar.gz"))
+    ("https://github.com/goromal/anixpkgs/archive/refs/heads/dev/o2.tar.gz"))
     { };
 in with pkgs;
 mkShell {

@@ -1,23 +1,23 @@
 #pragma once
 
 #include <atomic>
-#include <variant>
 #include <cstdint>
 #include <map>
-#include <mutex>
 #include <string>
+#include <vector>
 #include <functional>
-#include <mscpp/InputSet.h>
+
+#include <mscpp/MicroServiceReactors.h>
+#include <mscpp/Ports.h>
 #include <mscpp/StateSet.h>
-#include <mscpp/MicroService.h>
 #include <mscpp/MicroServiceContainer.h>
 #include <mscpp/Logging.h>
 
-#include "orchestrator/Result.h"
 #include "orchestrator/Job.h"
 
-#include "orchestrator/JobDatabase.h"
-#include "orchestrator/JobExecutor.h"
+// Forward declarations for dependencies
+namespace orchestrator::job_executor { class JobExecutor; }
+namespace orchestrator::job_database { class JobDatabase; }
 
 namespace orchestrator
 {
@@ -25,209 +25,509 @@ namespace orchestrator
 namespace job_queue
 {
 
-inline constexpr char Name[] = "JobQueue";
+// ══════════════════════════════════════════════════════════════════════════════
+// Reactor Name Declaration
+// ══════════════════════════════════════════════════════════════════════════════
 
-struct HeartbeatInput : public services::Input<HeartbeatInput, result::EmptyResult, 0, 1000>
-{
-};
+inline constexpr char NameJobQueue[] = "JobQueue";
 
-struct PushInput : public services::Input<PushInput, result::JobIdResult, 0, 100>
-{
-    Job job;
-};
+// ══════════════════════════════════════════════════════════════════════════════
+// Port Definitions (Event-Driven Communication)
+// ══════════════════════════════════════════════════════════════════════════════
 
-struct QueryInput : public services::Input<QueryInput, result::JobsListResult, 1, 10>
-{
-    struct GetAllQueuedJobs
-    {
+/**
+ * Query request structure - simplified from old variant-based approach
+ */
+struct JobQuery {
+    enum class Type {
+        GET_ALL_QUEUED,
+        GET_BY_PRIORITY,
+        GET_BY_ID
     };
-    struct GetJobsAtPriorityLevel
-    {
-        int64_t priority;
+
+    Type type{Type::GET_ALL_QUEUED};
+    int64_t priority{-1};  // For GET_BY_PRIORITY
+    int64_t id{-1};        // For GET_BY_ID
+};
+
+/**
+ * Query response structure
+ */
+struct JobQueryResponse {
+    bool success{true};
+    std::vector<Job> jobs;
+    std::string error_message;
+};
+
+/**
+ * Control request structure
+ */
+struct ControlRequest {
+    enum class Command {
+        PAUSE,
+        RESUME,
+        CANCEL
     };
-    struct GetQueuedJobWithId
-    {
-        int64_t id;
-    };
-    using QueryType = std::variant<GetAllQueuedJobs, GetJobsAtPriorityLevel, GetQueuedJobWithId>;
-    QueryType query;
+
+    Command command;
+    int64_t target_job_id{-1};  // -1 for PAUSE/RESUME (all jobs)
 };
 
-struct TogglePauseInput : public services::Input<TogglePauseInput, result::BooleanResult, 2, 5>
-{
+/**
+ * Control response structure
+ */
+struct ControlResponse {
+    bool success{true};
+    std::string message;
 };
 
-struct DumpInput : public services::Input<DumpInput, result::BooleanResult, 1, 500>
-{
+/**
+ * Job result structure from executor
+ */
+struct JobResult {
+    int64_t job_id;
+    aapis::orchestrator::v1::JobStatus status;
+    std::variant<std::vector<std::string>, std::vector<Job>> outputs;
 };
 
-using Inputs = services::InputSet<HeartbeatInput, PushInput, QueryInput, TogglePauseInput, DumpInput>;
+/**
+ * Queue snapshot for persistence
+ */
+struct QueueSnapshot {
+    std::vector<Job> pending_jobs;
+    std::vector<int64_t> active_job_ids;  // Jobs awaiting results from executor
+    std::string boot_id;
+    int64_t snapshot_time_seconds;
+};
 
-using Container = services::MicroServiceContainer<job_executor::JobExecutor, job_database::JobDatabase>;
+/**
+ * Port collection for JobQueue reactor
+ *
+ * Inputs (Event-Triggered):
+ *   - new_job_in: New job submissions from JobServer
+ *   - query_request_in: Query requests from JobServer
+ *   - control_request_in: Control commands (pause/resume/cancel)
+ *   - job_result_in: Job completion results from JobExecutor
+ *   - load_snapshot_in: Restored snapshot from JobDatabase (init only)
+ *
+ * Outputs:
+ *   - new_job_id_out: Assigned job ID response to JobServer
+ *   - query_response_out: Query results to JobServer
+ *   - control_response_out: Control command acknowledgment
+ *   - execute_job_out: Jobs ready for execution to JobExecutor
+ *   - save_snapshot_out: Periodic snapshot to JobDatabase
+ */
+struct Ports {
+    // Inputs from JobServer (event-triggered)
+    ::services::InputPort<Job> new_job_in;
+    ::services::InputPort<JobQuery> query_request_in;
+    ::services::InputPort<ControlRequest> control_request_in;
 
-struct Store // TODO clean up by making this a class to protect private members
-{
-    std::atomic_uint8_t                        subCounter{0};
-    std::vector<Job>                           pendingJobs;
-    std::map<int64_t, result::FutureJobResult> pendingJobResults;
-    result::FutureJobQueueDataResult           pendingInitLoad;
-    std::vector<Job>                           pendingInitExecs;
+    // Outputs to JobServer (responses)
+    ::services::OutputPort<int64_t> new_job_id_out;
+    ::services::OutputPort<JobQueryResponse> query_response_out;
+    ::services::OutputPort<ControlResponse> control_response_out;
 
-    /// @brief Take a new job and register it with the queue store, giving it a unique ID
-    /// @param job Job to be registered and given an ID
-    /// @param paused Whether or not the program is currently paused
-    /// @return A globally unique, monotonically increasing ID
+    // Output to JobExecutor (event-triggered)
+    ::services::OutputPort<Job> execute_job_out;
+
+    // Input from JobExecutor (event-triggered)
+    ::services::InputPort<JobResult> job_result_in;
+
+    // Output to JobDatabase (periodic)
+    ::services::OutputPort<QueueSnapshot> save_snapshot_out;
+
+    // Input from JobDatabase (one-time at init)
+    ::services::InputPort<QueueSnapshot> load_snapshot_in;
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Store (Reactor State)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * JobQueue reactor state
+ *
+ * Maintains the core queue data structures and business logic for:
+ * - Job registration and unique ID assignment
+ * - Priority-based topological sorting (Kahn's algorithm)
+ * - Pause/unpause state management
+ * - Job blocking and dependency resolution
+ */
+struct Store {
+    // Job ID counter (atomic for thread safety)
+    std::atomic_uint8_t subCounter{0};
+
+    // Primary job queue (sorted by priority, dependencies, ID)
+    std::vector<Job> pendingJobs;
+
+    // Map of active job IDs awaiting results from executor
+    std::map<int64_t, bool> activeJobIds;
+
+    // Snapshot data for restoration after reboot
+    std::vector<Job> pendingInitExecs;
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Job Registration and ID Assignment
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Take a new job and register it with the queue store, giving it a unique ID
+     *
+     * @param job Job to be registered and given an ID
+     * @param paused Whether or not the program is currently paused
+     * @return A globally unique, monotonically increasing ID
+     */
     int64_t addAndRegisterNewJob(Job job, bool paused);
 
-    /// @brief Assign a unique ID and job statuses to a job
-    /// @param job Job to be given an ID
-    /// @param paused Whether or not the program is currently paused
-    /// @return A globally unique, monotinically increasing ID
+    /**
+     * Assign a unique ID and job statuses to a job
+     *
+     * @param job Job to be given an ID
+     * @param paused Whether or not the program is currently paused
+     * @return A globally unique, monotonically increasing ID
+     */
     int64_t initializeJobData(Job& job, bool paused);
 
-    /// @brief Sort all registered jobs in the store according to blocking status, priority, and ID
+    // ──────────────────────────────────────────────────────────────────────────
+    // Job Sorting and Dependency Resolution
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Sort all registered jobs in the store according to:
+     * 1. Blocking status (topological order via Kahn's algorithm)
+     * 2. Priority (lower number = higher priority)
+     * 3. ID (monotonically increasing timestamp)
+     */
     void sortJobs();
 
-    /// @brief Give all registered jobs a paused status, storing their previous statuses
+    // ──────────────────────────────────────────────────────────────────────────
+    // Pause/Unpause Management
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Give all registered jobs a paused status, storing their previous statuses
+     */
     void pauseJobs();
 
-    /// @brief Restore all registered paused jobs to their pre-paused statuses
+    /**
+     * Restore all registered paused jobs to their pre-paused statuses
+     */
     void unpauseJobs();
 
-    /// @brief Send as many jobs to the job executor as possible within the allotted time budget
-    /// @param timeBudget Allotted time budget
-    /// @param jobs Job pool to process
-    /// @param c Access point for the job executor
-    /// @param fJobDrainCriterion Criterion to determine if a job is ready for the executor
-    /// @return Whether or not all jobs were sent to the executor within the time budget
-    bool timedJobDrain(const std::chrono::milliseconds&       timeBudget,
-                       std::vector<Job>&                      jobs,
-                       const Container&                       c,
-                       const std::function<bool(const Job&)>& fJobDrainCriterion);
+    // ──────────────────────────────────────────────────────────────────────────
+    // Job Result Processing
+    // ──────────────────────────────────────────────────────────────────────────
 
-    /// @brief Poll pending jobs for results and clear blockers and add child jobs as necessary
-    /// @param paused Whether or not the program is currently paused
-    void processPendingJobResults(bool paused);
+    /**
+     * Process a completed job result:
+     * - Remove from active jobs
+     * - Unblock dependent jobs
+     * - Handle outputs (strings or spawned child jobs)
+     * - Mark error-dependent jobs as canceled
+     *
+     * @param result Job completion result from executor
+     * @param paused Whether system is currently paused
+     */
+    void processJobResult(const JobResult& result, bool paused);
 
-    /// @brief Return a copy of all jobs that match a query criterion
-    /// @param query Query criterion with which to filter jobs
-    /// @return Filtered list of jobs meeting the query criterion
-    std::vector<Job> query(const QueryInput::QueryType& query);
+    // ──────────────────────────────────────────────────────────────────────────
+    // Query Operations
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Query jobs based on filter criteria
+     *
+     * @param query Query specification
+     * @return Vector of matching jobs
+     */
+    std::vector<Job> query(const JobQuery& query) const;
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Snapshot Operations
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Create a snapshot of current queue state for persistence
+     *
+     * @return Snapshot containing pending and active jobs
+     */
+    QueueSnapshot createSnapshot() const;
+
+    /**
+     * Restore queue state from snapshot
+     *
+     * @param snapshot Previously saved snapshot
+     */
+    void restoreFromSnapshot(const QueueSnapshot& snapshot);
 };
 
-// Initial state in which any persistent memory is requested to be loaded
-struct InitState : public services::State<InitState, 0>
-{
-    /// @brief Kick off a request to load any pending jobs from disk
-    /// @param s Mutable store
-    /// @param c Container of other services
-    /// @param i Heartbeat input
-    /// @return State transition index
-    size_t step(Store& s, const Container& c, HeartbeatInput& i);
+// ══════════════════════════════════════════════════════════════════════════════
+// Dependency Container
+// ══════════════════════════════════════════════════════════════════════════════
 
-    /// @brief Safely reject any job push request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Job push input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, PushInput& i);
+// NOTE: Container is empty for now since JobExecutor and JobDatabase
+// will be connected via ports (event-driven), not via container dependencies
+using Container = ::services::MicroServiceContainer<>;
 
-    /// @brief Safely reject any query request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Query input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, QueryInput& i);
+// ══════════════════════════════════════════════════════════════════════════════
+// FSM State Declarations
+// ══════════════════════════════════════════════════════════════════════════════
 
-    /// @brief Safely reject any pause toggle request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Pause toggle input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, TogglePauseInput& i);
-
-    /// @brief Vacuously accept any dump request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Dump input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, DumpInput& i);
+/**
+ * InitState - Request persistent memory load from database
+ *
+ * Transitions:
+ *   → InitWaitState (after requesting snapshot load)
+ */
+struct InitState : public ::services::State<InitState, 0> {
+    /**
+     * Entry action: Request snapshot from database
+     */
+    size_t step(Store& s, Ports& p, const Container& c);
 };
 
-// Follow-on initial state in which persistent memory is actually loaded
-struct InitWaitState : public services::State<InitWaitState, 1>
-{
-    size_t step(Store& s, const Container&, HeartbeatInput& i);
-
-    /// @brief Safely reject any job push request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Job push input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, PushInput& i);
-
-    /// @brief Safely reject any query request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Query input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, QueryInput& i);
-
-    /// @brief Safely reject any pause toggle request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Pause toggle input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, TogglePauseInput& i);
-
-    /// @brief Vacuously accept any dump request while in the Init state
-    /// @param s Mutable store
-    /// @param _ Unused
-    /// @param i Dump input
-    /// @return State transition index
-    size_t step(Store& s, const Container&, DumpInput& i);
+/**
+ * InitWaitState - Wait for database to load snapshot
+ *
+ * Transitions:
+ *   → InitFinalWaitState (if in-progress jobs exist)
+ *   → RunningState (if no in-progress jobs)
+ */
+struct InitWaitState : public ::services::State<InitWaitState, 1> {
+    /**
+     * Check for snapshot load completion
+     */
+    size_t step(Store& s, Ports& p, const Container& c);
 };
 
-// Final initial state in which formerly in-progress jobs are re-triggered
-struct InitFinalWaitState : public services::State<InitFinalWaitState, 2>
-{
-    size_t step(Store& s, const Container& c, HeartbeatInput& i);
-    size_t step(Store& s, const Container& c, PushInput& i);
-    size_t step(Store& s, const Container& c, QueryInput& i);
-    size_t step(Store& s, const Container& c, TogglePauseInput& i);
-    size_t step(Store& s, const Container& c, DumpInput& i);
+/**
+ * InitFinalWaitState - Re-trigger formerly in-progress jobs
+ *
+ * Transitions:
+ *   → RunningState (after all in-progress jobs re-queued)
+ */
+struct InitFinalWaitState : public ::services::State<InitFinalWaitState, 2> {
+    /**
+     * Re-submit in-progress jobs to executor
+     */
+    size_t step(Store& s, Ports& p, const Container& c);
 };
 
-// Nominal running state
-struct RunningState : public services::State<RunningState, 3>
-{
-    size_t step(Store& s, const Container& c, HeartbeatInput& i);
-    size_t step(Store& s, const Container& c, PushInput& i);
-    size_t step(Store& s, const Container& c, QueryInput& i);
-    size_t step(Store& s, const Container& c, TogglePauseInput& i);
-    size_t step(Store& s, const Container& c, DumpInput& i);
+/**
+ * RunningState - Normal operation
+ *
+ * Transitions:
+ *   → PausedState (on pause command)
+ */
+struct RunningState : public ::services::State<RunningState, 3> {
+    /**
+     * Process queue operations normally
+     */
+    size_t step(Store& s, Ports& p, const Container& c);
 };
 
-// Paused state in which no new active jobs get queued
-struct PausedState : public services::State<PausedState, 4>
-{
-    size_t step(Store& s, const Container& c, HeartbeatInput& i);
-    size_t step(Store& s, const Container& c, PushInput& i);
-    size_t step(Store& s, const Container& c, QueryInput& i);
-    size_t step(Store& s, const Container& c, TogglePauseInput& i);
-    size_t step(Store& s, const Container& c, DumpInput& i);
+/**
+ * PausedState - No new jobs sent to executor
+ *
+ * Transitions:
+ *   → RunningState (on resume command)
+ */
+struct PausedState : public ::services::State<PausedState, 4> {
+    /**
+     * Process queries/control but don't execute jobs
+     */
+    size_t step(Store& s, Ports& p, const Container& c);
 };
 
-using States = services::StateSet<InitState, InitWaitState, InitFinalWaitState, RunningState, PausedState>;
+// State set for FSM
+using States = ::services::StateSet<
+    InitState,
+    InitWaitState,
+    InitFinalWaitState,
+    RunningState,
+    PausedState
+>;
 
-using JobQueueBase = services::MicroService<Name, Store, Container, States, Inputs>;
+// ══════════════════════════════════════════════════════════════════════════════
+// JobQueue Reactor
+// ══════════════════════════════════════════════════════════════════════════════
 
-class JobQueue : public JobQueueBase
+/**
+ * JobQueue - Event-driven job queue manager with FSM
+ *
+ * Responsibilities:
+ * - Assign unique IDs to jobs (monotonically increasing)
+ * - Maintain priority-sorted queue with topological ordering
+ * - Track job dependencies and unblock when ready
+ * - Handle pause/resume/cancel commands
+ * - Persist queue state to database
+ *
+ * Event-Driven Design:
+ * - executeLogicalAction() handles all event-triggered operations
+ * - doHeartbeat() only handles periodic snapshot saves
+ * - Automatic logical action scheduling on port connections
+ *
+ * Logical Actions:
+ * - "on_port_new_job": Job submission from JobServer
+ * - "on_port_job_result": Job completion from JobExecutor
+ * - "on_port_query": Query request from JobServer
+ * - "on_port_control": Control command from JobServer
+ * - "on_port_load_snapshot": Snapshot loaded from JobDatabase
+ * - "try_execute_jobs": Internal trigger to drain ready jobs
+ */
+class JobQueue : public ::services::MicroServiceFSMReactor<
+    NameJobQueue,
+    Store,
+    Ports,
+    Container,
+    States
+>
 {
 public:
-    JobQueue(const Container& container) : JobQueueBase(container) {}
+    using Base = ::services::MicroServiceFSMReactor<
+        NameJobQueue,
+        Store,
+        Ports,
+        Container,
+        States
+    >;
+
+    // Inherit constructors
+    using Base::Base;
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // IReactor Interface
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Initialize reactor - set initial state
+     */
+    void initialize() override;
+
+    /**
+     * Heartbeat - periodic work only (snapshot saves)
+     *
+     * Frequency: 1000ms (1 second)
+     *
+     * Operations:
+     * - Periodic snapshot save to database (every 10 seconds)
+     */
+    void doHeartbeat(const ::services::LogicalTag& tag) override;
+
+    /**
+     * Event-driven logical action handler
+     *
+     * Actions:
+     * - "on_port_new_job": React to new job submission
+     * - "on_port_job_result": React to job completion
+     * - "on_port_query": React to query request
+     * - "on_port_control": React to control command
+     * - "on_port_load_snapshot": React to snapshot load
+     * - "try_execute_jobs": Drain ready jobs to executor
+     */
+    void executeLogicalAction(const ::services::LogicalTag& tag,
+                              const std::string& action) override;
+
+    /**
+     * Clear input ports after each heartbeat
+     * (Auto-implemented via ENABLE_AUTO_CLEAR_PORTS)
+     */
+    void clearPorts() override {
+        // Auto-clearing is handled by ENABLE_AUTO_CLEAR_PORTS macro
+    }
+
+    /**
+     * Heartbeat frequency override
+     *
+     * @return 1 second (1,000,000,000 nanoseconds)
+     */
+    ::services::LogicalTime heartbeatDuration() const override {
+        return ::services::LogicalTime{1'000'000'000};  // 1 second
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Public Accessors (for testing)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    Store& getStore() { return mStore; }
+    const Store& getStore() const { return mStore; }
+
+    Ports& getPorts() { return mPorts; }
+    const Ports& getPorts() const { return mPorts; }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Internal Helpers (public for simplicity - could be private with friend)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Check if system is currently paused
+     */
+    bool isPaused() const {
+        return getCurrentState() == PausedState::index();
+    }
+
+    /**
+     * Get current FSM state index
+     */
+    size_t getCurrentState() const {
+        return mCurrentState;
+    }
+
+protected:
+    size_t mCurrentState{InitState::index()};
+
+    /**
+     * Drain ready jobs (no blockers) to executor
+     *
+     * Only executes if in RunningState
+     */
+    void drainReadyJobs();
+
+    /**
+     * Handle new job submission
+     */
+    void handleNewJob();
+
+    /**
+     * Handle job completion result
+     */
+    void handleJobResult();
+
+    /**
+     * Handle query request
+     */
+    void handleQuery();
+
+    /**
+     * Handle control command
+     */
+    void handleControl();
+
+    /**
+     * Handle snapshot load
+     */
+    void handleSnapshotLoad();
+
+    /**
+     * Save snapshot to database
+     */
+    void saveSnapshot();
 };
 
 } // namespace job_queue
 
-} // end namespace orchestrator
+} // namespace orchestrator
+
+// Manual port clearing implementation (ENABLE_AUTO_CLEAR_PORTS macro doesn't work with namespaced types)
+namespace services {
+template<>
+inline void clearInputPorts<orchestrator::job_queue::Ports>(orchestrator::job_queue::Ports& ports)
+{
+    ports.new_job_in.clear();
+    ports.query_request_in.clear();
+    ports.control_request_in.clear();
+    ports.job_result_in.clear();
+    ports.load_snapshot_in.clear();
+}
+}
