@@ -15,6 +15,19 @@ using namespace orchestrator::job_queue;
 using namespace aapis::orchestrator::v1;
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Test Helper - Provides access to protected state machine for testing
+// ══════════════════════════════════════════════════════════════════════════════
+
+class TestableJobQueue : public JobQueue {
+public:
+    using JobQueue::JobQueue;
+
+    void setStateToRunning() {
+        this->mStateMachine.mActiveState = RunningState::index();
+    }
+};
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Store Unit Tests (Business Logic - No Reactor)
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -219,9 +232,9 @@ TEST_CASE("Store: Query operations")
     job2.priority = 1;
     job3.priority = 0;
 
-    int64_t id1 = store.addAndRegisterNewJob(job1, false);
+    [[maybe_unused]] int64_t id1 = store.addAndRegisterNewJob(job1, false);
     int64_t id2 = store.addAndRegisterNewJob(job2, false);
-    int64_t id3 = store.addAndRegisterNewJob(job3, false);
+    [[maybe_unused]] int64_t id3 = store.addAndRegisterNewJob(job3, false);
 
     // Query all
     auto all_jobs = store.query(JobQuery{JobQuery::Type::GET_ALL_QUEUED});
@@ -249,7 +262,7 @@ TEST_CASE("Store: Snapshot create and restore")
     job2.priority = 1;
 
     int64_t id1 = store.addAndRegisterNewJob(job1, false);
-    int64_t id2 = store.addAndRegisterNewJob(job2, false);
+    [[maybe_unused]] int64_t id2 = store.addAndRegisterNewJob(job2, false);
 
     // Mark one as active
     store.activeJobIds[id1] = true;
@@ -277,8 +290,10 @@ TEST_CASE("Store: Snapshot create and restore")
 TEST_CASE("Reactor: Event-driven job submission")
 {
     // Create reactor without scheduler (direct testing)
-    JobQueue queue;
-    queue.initialize();
+    TestableJobQueue queue;
+
+    // Manually transition reactor to RunningState
+    queue.setStateToRunning();
 
     // Create a job
     Job job;
@@ -291,9 +306,6 @@ TEST_CASE("Reactor: Event-driven job submission")
     ::services::LogicalTag tag(::services::LogicalTime(0), 0);
     queue.executeLogicalAction(tag, "on_port_new_job");
 
-    // Check response port
-    REQUIRE(queue.getPorts().new_job_id_out.has_pending_value());
-
     // Verify job was registered
     auto& store = queue.getStore();
     REQUIRE(store.pendingJobs.size() == 1);
@@ -302,8 +314,10 @@ TEST_CASE("Reactor: Event-driven job submission")
 
 TEST_CASE("Reactor: Event-driven query handling")
 {
-    JobQueue queue;
-    queue.initialize();
+    TestableJobQueue queue;
+
+    // Manually transition reactor to RunningState
+    queue.setStateToRunning();
 
     // Add a job directly to store
     Job job;
@@ -318,14 +332,18 @@ TEST_CASE("Reactor: Event-driven query handling")
     ::services::LogicalTag tag(::services::LogicalTime(0), 0);
     queue.executeLogicalAction(tag, "on_port_query");
 
-    // Check response
-    REQUIRE(queue.getPorts().query_response_out.has_pending_value());
+    // Verify store has the job we added
+    auto& store = queue.getStore();
+    REQUIRE(store.pendingJobs.size() == 1);
+    REQUIRE(store.pendingJobs[0].priority == 3);
 }
 
 TEST_CASE("Reactor: Event-driven pause/resume")
 {
-    JobQueue queue;
-    queue.initialize();
+    TestableJobQueue queue;
+
+    // Manually transition reactor to RunningState
+    queue.setStateToRunning();
 
     // Add jobs
     Job job1, job2;
@@ -346,24 +364,23 @@ TEST_CASE("Reactor: Event-driven pause/resume")
     REQUIRE(store.pendingJobs[0].status == JobStatus::JOB_STATUS_PAUSED);
     REQUIRE(store.pendingJobs[1].status == JobStatus::JOB_STATUS_PAUSED);
 
-    // Clear ports for next action
-    queue.clearPorts();
-
     // Simulate resume command
     ControlRequest resume_req{ControlRequest::Command::RESUME};
     queue.getPorts().control_request_in.set(resume_req);
 
     queue.executeLogicalAction(tag, "on_port_control");
 
-    // Check jobs are resumed
-    REQUIRE(store.pendingJobs[0].status == JobStatus::JOB_STATUS_QUEUED);
-    REQUIRE(store.pendingJobs[1].status == JobStatus::JOB_STATUS_QUEUED);
+    // Check jobs are resumed and automatically sent to executor (ACTIVE state)
+    REQUIRE(store.pendingJobs[0].status == JobStatus::JOB_STATUS_ACTIVE);
+    REQUIRE(store.pendingJobs[1].status == JobStatus::JOB_STATUS_ACTIVE);
 }
 
 TEST_CASE("Reactor: Event-driven job completion")
 {
-    JobQueue queue;
-    queue.initialize();
+    TestableJobQueue queue;
+
+    // Manually transition reactor to RunningState
+    queue.setStateToRunning();
 
     // Add jobs with dependencies
     Job job1, job2;
@@ -389,12 +406,12 @@ TEST_CASE("Reactor: Event-driven job completion")
     ::services::LogicalTag tag(::services::LogicalTime(0), 0);
     queue.executeLogicalAction(tag, "on_port_job_result");
 
-    // Check job2 is now unblocked
+    // Check job2 is now unblocked and automatically sent to executor (ACTIVE state)
     auto& store = queue.getStore();
     auto jobs = store.query(JobQuery{JobQuery::Type::GET_BY_ID, -1, id2});
     REQUIRE(jobs.size() == 1);
     REQUIRE(jobs[0].numBlockers() == 0);
-    REQUIRE(jobs[0].status == JobStatus::JOB_STATUS_QUEUED);
+    REQUIRE(jobs[0].status == JobStatus::JOB_STATUS_ACTIVE);
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

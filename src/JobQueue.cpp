@@ -333,7 +333,9 @@ void Store::restoreFromSnapshot(const QueueSnapshot& snapshot)
 // FSM State Implementations
 // ══════════════════════════════════════════════════════════════════════════════
 
-size_t InitState::step(Store& s, Ports& p, const Container& c)
+size_t InitState::step([[maybe_unused]] Store& s, [[maybe_unused]] Ports& p, [[maybe_unused]] const Container& c,
+                       [[maybe_unused]] const ::services::LogicalTag& tag,
+                       [[maybe_unused]] const ::services::StepTrigger& trigger)
 {
     // Request snapshot load from database via logical action
     // The database will respond by writing to load_snapshot_in port
@@ -346,34 +348,42 @@ size_t InitState::step(Store& s, Ports& p, const Container& c)
     return InitWaitState::index();
 }
 
-size_t InitWaitState::step(Store& s, Ports& p, const Container& c)
+size_t InitWaitState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c,
+                           [[maybe_unused]] const ::services::LogicalTag& tag,
+                           const ::services::StepTrigger& trigger)
 {
-    // Check if snapshot has been loaded
-    if (p.load_snapshot_in.is_present())
+    // Only handle logical action for snapshot load
+    if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION &&
+        trigger.action_name == "on_port_load_snapshot")
     {
-        SPDLOG_INFO("JobQueue snapshot loaded, restoring state");
-
-        auto snapshot = p.load_snapshot_in.get();
-        s.restoreFromSnapshot(snapshot);
-
-        // If there are in-progress jobs to re-execute, go to final init state
-        if (!s.pendingInitExecs.empty())
+        if (p.load_snapshot_in.is_present())
         {
-            SPDLOG_INFO("JobQueue has {} in-progress jobs to re-execute",
-                    s.pendingInitExecs.size());
-            return InitFinalWaitState::index();
-        }
+            SPDLOG_INFO("JobQueue snapshot loaded, restoring state");
 
-        // Otherwise, go directly to running
-        SPDLOG_INFO("JobQueue transitioning to Running state");
-        return RunningState::index();
+            auto snapshot = p.load_snapshot_in.get();
+            s.restoreFromSnapshot(snapshot);
+
+            // If there are in-progress jobs to re-execute, go to final init state
+            if (!s.pendingInitExecs.empty())
+            {
+                SPDLOG_INFO("JobQueue has {} in-progress jobs to re-execute",
+                        s.pendingInitExecs.size());
+                return InitFinalWaitState::index();
+            }
+
+            // Otherwise, go directly to running
+            SPDLOG_INFO("JobQueue transitioning to Running state");
+            return RunningState::index();
+        }
     }
 
     // Stay in wait state
     return InitWaitState::index();
 }
 
-size_t InitFinalWaitState::step(Store& s, Ports& p, const Container& c)
+size_t InitFinalWaitState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c,
+                                [[maybe_unused]] const ::services::LogicalTag& tag,
+                                [[maybe_unused]] const ::services::StepTrigger& trigger)
 {
     // Re-submit in-progress jobs to executor
     for (auto& job : s.pendingInitExecs)
@@ -389,17 +399,283 @@ size_t InitFinalWaitState::step(Store& s, Ports& p, const Container& c)
     return RunningState::index();
 }
 
-size_t RunningState::step(Store& s, Ports& p, const Container& c)
+size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c,
+                          [[maybe_unused]] const ::services::LogicalTag& tag,
+                          const ::services::StepTrigger& trigger)
 {
-    // Most work happens in executeLogicalAction()
-    // This is just a placeholder for FSM compatibility
+    // Handle all logical actions based on StepTrigger
+    if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
+    {
+        if (trigger.action_name == "on_port_new_job")
+        {
+            // Handle new job submission
+            if (!p.new_job_in.is_present())
+                return RunningState::index();
+
+            auto job = p.new_job_in.get();
+
+            SPDLOG_INFO("JobQueue received new job with priority {}", job.priority);
+
+            // Register job and assign ID (not paused in running state)
+            int64_t id = s.addAndRegisterNewJob(job, false);
+
+            // Send response
+            p.new_job_id_out.set(id);
+
+            SPDLOG_INFO("JobQueue assigned ID {} to new job", id);
+
+            // If job is ready (no blockers), try to execute immediately
+            if (job.numBlockers() == 0)
+            {
+                // Drain ready jobs inline
+                for (auto& j : s.pendingJobs)
+                {
+                    if (j.numBlockers() == 0 &&
+                        j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
+                    {
+                        SPDLOG_INFO("JobQueue sending job {} to executor", j.id);
+                        p.execute_job_out.set(j);
+                        j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
+                        s.activeJobIds[j.id] = true;
+                    }
+                }
+            }
+        }
+        else if (trigger.action_name == "on_port_job_result")
+        {
+            // Handle job completion result
+            if (!p.job_result_in.is_present())
+                return RunningState::index();
+
+            auto result = p.job_result_in.get();
+
+            SPDLOG_INFO("JobQueue received result for job {}", result.job_id);
+
+            // Process the result (unblock dependent jobs, handle outputs/children)
+            s.processJobResult(result, false);
+
+            // Re-sort queue after dependency changes
+            s.sortJobs();
+
+            // Drain ready jobs inline
+            for (auto& j : s.pendingJobs)
+            {
+                if (j.numBlockers() == 0 &&
+                    j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
+                {
+                    SPDLOG_INFO("JobQueue sending job {} to executor", j.id);
+                    p.execute_job_out.set(j);
+                    j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
+                    s.activeJobIds[j.id] = true;
+                }
+            }
+        }
+        else if (trigger.action_name == "on_port_query")
+        {
+            // Handle query request
+            if (!p.query_request_in.is_present())
+                return RunningState::index();
+
+            auto query = p.query_request_in.get();
+
+            SPDLOG_DEBUG("JobQueue processing query");
+
+            // Execute query
+            auto jobs = s.query(query);
+
+            // Send response
+            JobQueryResponse response;
+            response.success = true;
+            response.jobs = jobs;
+            p.query_response_out.set(response);
+        }
+        else if (trigger.action_name == "on_port_control")
+        {
+            // Handle control command
+            if (!p.control_request_in.is_present())
+                return RunningState::index();
+
+            auto ctrl = p.control_request_in.get();
+
+            ControlResponse response;
+            response.success = true;
+
+            switch (ctrl.command)
+            {
+            case ControlRequest::Command::PAUSE:
+                SPDLOG_INFO("JobQueue pausing all jobs");
+                s.pauseJobs();
+                response.message = "Jobs paused";
+                p.control_response_out.set(response);
+                return PausedState::index();
+
+            case ControlRequest::Command::RESUME:
+                SPDLOG_INFO("JobQueue already running");
+                response.message = "Jobs already running";
+                p.control_response_out.set(response);
+                break;
+
+            case ControlRequest::Command::CANCEL:
+                SPDLOG_INFO("JobQueue canceling job {}", ctrl.target_job_id);
+                // Find and cancel the job
+                for (auto& job : s.pendingJobs)
+                {
+                    if (job.id == ctrl.target_job_id)
+                    {
+                        job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+                        response.message = "Job canceled";
+                        break;
+                    }
+                }
+                p.control_response_out.set(response);
+                break;
+            }
+        }
+        else if (trigger.action_name == "try_execute_jobs")
+        {
+            // Drain ready jobs to executor
+            // Send all ready jobs (no blockers, queued status) to executor
+            for (auto& job : s.pendingJobs)
+            {
+                if (job.numBlockers() == 0 &&
+                    job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
+                {
+                    SPDLOG_INFO("JobQueue sending job {} to executor", job.id);
+
+                    p.execute_job_out.set(job);
+                    job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
+                    s.activeJobIds[job.id] = true;
+                }
+            }
+        }
+    }
+
     return RunningState::index();
 }
 
-size_t PausedState::step(Store& s, Ports& p, const Container& c)
+size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c,
+                         [[maybe_unused]] const ::services::LogicalTag& tag,
+                         const ::services::StepTrigger& trigger)
 {
-    // Most work happens in executeLogicalAction()
-    // This is just a placeholder for FSM compatibility
+    // Handle all logical actions based on StepTrigger
+    if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
+    {
+        if (trigger.action_name == "on_port_new_job")
+        {
+            // Handle new job submission (paused)
+            if (!p.new_job_in.is_present())
+                return PausedState::index();
+
+            auto job = p.new_job_in.get();
+
+            SPDLOG_INFO("JobQueue received new job with priority {} (paused)", job.priority);
+
+            // Register job and assign ID (paused state)
+            int64_t id = s.addAndRegisterNewJob(job, true);
+
+            // Send response
+            p.new_job_id_out.set(id);
+
+            SPDLOG_INFO("JobQueue assigned ID {} to new job (paused)", id);
+
+            // Don't execute jobs in paused state
+        }
+        else if (trigger.action_name == "on_port_job_result")
+        {
+            // Handle job completion result
+            if (!p.job_result_in.is_present())
+                return PausedState::index();
+
+            auto result = p.job_result_in.get();
+
+            SPDLOG_INFO("JobQueue received result for job {} (paused)", result.job_id);
+
+            // Process the result (unblock dependent jobs, handle outputs/children)
+            s.processJobResult(result, true);
+
+            // Re-sort queue after dependency changes
+            s.sortJobs();
+
+            // Don't try to execute jobs in paused state
+        }
+        else if (trigger.action_name == "on_port_query")
+        {
+            // Handle query request
+            if (!p.query_request_in.is_present())
+                return PausedState::index();
+
+            auto query = p.query_request_in.get();
+
+            SPDLOG_DEBUG("JobQueue processing query (paused)");
+
+            // Execute query
+            auto jobs = s.query(query);
+
+            // Send response
+            JobQueryResponse response;
+            response.success = true;
+            response.jobs = jobs;
+            p.query_response_out.set(response);
+        }
+        else if (trigger.action_name == "on_port_control")
+        {
+            // Handle control command
+            if (!p.control_request_in.is_present())
+                return PausedState::index();
+
+            auto ctrl = p.control_request_in.get();
+
+            ControlResponse response;
+            response.success = true;
+
+            switch (ctrl.command)
+            {
+            case ControlRequest::Command::PAUSE:
+                SPDLOG_INFO("JobQueue already paused");
+                response.message = "Jobs already paused";
+                p.control_response_out.set(response);
+                break;
+
+            case ControlRequest::Command::RESUME:
+                SPDLOG_INFO("JobQueue resuming all jobs");
+                s.unpauseJobs();
+                response.message = "Jobs resumed";
+                p.control_response_out.set(response);
+
+                // Drain ready jobs inline before transitioning to running state
+                for (auto& j : s.pendingJobs)
+                {
+                    if (j.numBlockers() == 0 &&
+                        j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
+                    {
+                        SPDLOG_INFO("JobQueue sending job {} to executor", j.id);
+                        p.execute_job_out.set(j);
+                        j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
+                        s.activeJobIds[j.id] = true;
+                    }
+                }
+
+                return RunningState::index();
+
+            case ControlRequest::Command::CANCEL:
+                SPDLOG_INFO("JobQueue canceling job {}", ctrl.target_job_id);
+                // Find and cancel the job
+                for (auto& job : s.pendingJobs)
+                {
+                    if (job.id == ctrl.target_job_id)
+                    {
+                        job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+                        response.message = "Job canceled";
+                        break;
+                    }
+                }
+                p.control_response_out.set(response);
+                break;
+            }
+        }
+        // Note: "try_execute_jobs" not handled in paused state - jobs should not be executed
+    }
+
     return PausedState::index();
 }
 
@@ -407,242 +683,20 @@ size_t PausedState::step(Store& s, Ports& p, const Container& c)
 // JobQueue Reactor Implementation
 // ══════════════════════════════════════════════════════════════════════════════
 
-void JobQueue::initialize()
+void JobQueue::doPeriodicMaintenance(const ::services::LogicalTag& tag)
 {
-    SPDLOG_INFO("JobQueue reactor initializing");
-
-    // Start in InitState and execute initial transition
-    InitState state;
-    mCurrentState = state.step(mStore, mPorts, mContainer);
-}
-
-void JobQueue::doHeartbeat(const ::services::LogicalTag& tag)
-{
-    // Heartbeat only handles periodic snapshot saves
-    // All event-driven work happens in executeLogicalAction()
-
-    // Save snapshot every 10 seconds
-    static constexpr int64_t SNAPSHOT_INTERVAL_NS = 10'000'000'000;  // 10 seconds
-
-    if (tag.time.count() % SNAPSHOT_INTERVAL_NS == 0 && tag.time.count() > 0)
+    // Save snapshot every 60 seconds
+    auto time_s = tag.time.count() / 1'000'000'000;
+    if (time_s % 60 == 0 && time_s > 0)
     {
-        saveSnapshot();
-    }
-
-    // Execute FSM step for current state (mostly no-op in Running/Paused)
-    // This maintains FSM compatibility
-    if (mCurrentState == RunningState::index())
-    {
-        RunningState state;
-        mCurrentState = state.step(mStore, mPorts, mContainer);
-    }
-    else if (mCurrentState == PausedState::index())
-    {
-        PausedState state;
-        mCurrentState = state.step(mStore, mPorts, mContainer);
-    }
-    else if (mCurrentState == InitWaitState::index())
-    {
-        InitWaitState state;
-        mCurrentState = state.step(mStore, mPorts, mContainer);
-    }
-    else if (mCurrentState == InitFinalWaitState::index())
-    {
-        InitFinalWaitState state;
-        mCurrentState = state.step(mStore, mPorts, mContainer);
+        auto snapshot = getStore().createSnapshot();
+        getPorts().save_snapshot_out.set(snapshot);
     }
 }
 
-void JobQueue::executeLogicalAction(const ::services::LogicalTag& tag,
-                                    const std::string& action)
+bool JobQueue::isPaused() const
 {
-    // Event-driven action handling
-
-    if (action == "on_port_new_job")
-    {
-        handleNewJob();
-    }
-    else if (action == "on_port_job_result")
-    {
-        handleJobResult();
-    }
-    else if (action == "on_port_query")
-    {
-        handleQuery();
-    }
-    else if (action == "on_port_control")
-    {
-        handleControl();
-    }
-    else if (action == "on_port_load_snapshot")
-    {
-        handleSnapshotLoad();
-    }
-    else if (action == "try_execute_jobs")
-    {
-        drainReadyJobs();
-    }
-    else
-    {
-        SPDLOG_WARN("JobQueue received unknown action: {}", action);
-    }
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Event Handlers
-// ──────────────────────────────────────────────────────────────────────────────
-
-void JobQueue::handleNewJob()
-{
-    if (!mPorts.new_job_in.is_present())
-        return;
-
-    auto job = mPorts.new_job_in.get();
-
-    SPDLOG_INFO("JobQueue received new job with priority {}", job.priority);
-
-    // Register job and assign ID
-    int64_t id = mStore.addAndRegisterNewJob(job, isPaused());
-
-    // Send response
-    mPorts.new_job_id_out.set(id);
-
-    SPDLOG_INFO("JobQueue assigned ID {} to new job", id);
-
-    // If job is ready (no blockers) and we're not paused, try to execute
-    if (job.numBlockers() == 0 && !isPaused())
-    {
-        scheduleLogicalAction("try_execute_jobs");
-    }
-}
-
-void JobQueue::handleJobResult()
-{
-    if (!mPorts.job_result_in.is_present())
-        return;
-
-    auto result = mPorts.job_result_in.get();
-
-    SPDLOG_INFO("JobQueue received result for job {}", result.job_id);
-
-    // Process the result (unblock dependent jobs, handle outputs/children)
-    mStore.processJobResult(result, isPaused());
-
-    // Re-sort queue after dependency changes
-    mStore.sortJobs();
-
-    // Try to execute newly unblocked jobs
-    if (!isPaused())
-    {
-        scheduleLogicalAction("try_execute_jobs");
-    }
-}
-
-void JobQueue::handleQuery()
-{
-    if (!mPorts.query_request_in.is_present())
-        return;
-
-    auto query = mPorts.query_request_in.get();
-
-    SPDLOG_DEBUG("JobQueue processing query");
-
-    // Execute query
-    auto jobs = mStore.query(query);
-
-    // Send response
-    JobQueryResponse response;
-    response.success = true;
-    response.jobs = jobs;
-    mPorts.query_response_out.set(response);
-}
-
-void JobQueue::handleControl()
-{
-    if (!mPorts.control_request_in.is_present())
-        return;
-
-    auto ctrl = mPorts.control_request_in.get();
-
-    ControlResponse response;
-    response.success = true;
-
-    switch (ctrl.command)
-    {
-    case ControlRequest::Command::PAUSE:
-        SPDLOG_INFO("JobQueue pausing all jobs");
-        mStore.pauseJobs();
-        mCurrentState = PausedState::index();
-        response.message = "Jobs paused";
-        break;
-
-    case ControlRequest::Command::RESUME:
-        SPDLOG_INFO("JobQueue resuming all jobs");
-        mStore.unpauseJobs();
-        mCurrentState = RunningState::index();
-        response.message = "Jobs resumed";
-        // Try to execute ready jobs
-        scheduleLogicalAction("try_execute_jobs");
-        break;
-
-    case ControlRequest::Command::CANCEL:
-        SPDLOG_INFO("JobQueue canceling job {}", ctrl.target_job_id);
-        // Find and cancel the job
-        for (auto& job : mStore.pendingJobs)
-        {
-            if (job.id == ctrl.target_job_id)
-            {
-                job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
-                response.message = "Job canceled";
-                break;
-            }
-        }
-        break;
-    }
-
-    mPorts.control_response_out.set(response);
-}
-
-void JobQueue::handleSnapshotLoad()
-{
-    // Handled in InitWaitState::step()
-    // This action can be triggered by port connection
-    if (mCurrentState == InitWaitState::index())
-    {
-        InitWaitState state;
-        mCurrentState = state.step(mStore, mPorts, mContainer);
-    }
-}
-
-void JobQueue::drainReadyJobs()
-{
-    if (isPaused())
-        return;
-
-    // Send all ready jobs (no blockers, queued status) to executor
-    for (auto& job : mStore.pendingJobs)
-    {
-        if (job.numBlockers() == 0 &&
-            job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
-        {
-            SPDLOG_INFO("JobQueue sending job {} to executor", job.id);
-
-            mPorts.execute_job_out.set(job);
-            job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
-            mStore.activeJobIds[job.id] = true;
-        }
-    }
-}
-
-void JobQueue::saveSnapshot()
-{
-    if (mCurrentState != RunningState::index() && mCurrentState != PausedState::index())
-        return;
-
-    SPDLOG_DEBUG("JobQueue saving snapshot");
-
-    auto snapshot = mStore.createSnapshot();
-    mPorts.save_snapshot_out.set(snapshot);
+    return Base::getCurrentState() == PausedState::index();
 }
 
 } // namespace job_queue

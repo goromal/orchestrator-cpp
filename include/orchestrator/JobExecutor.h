@@ -14,6 +14,7 @@
 #include <mscpp/MicroServiceReactors.h>
 #include <mscpp/Ports.h>
 #include <mscpp/StateSet.h>
+#include <mscpp/StepTrigger.h>
 #include <mscpp/MicroServiceContainer.h>
 #include <mscpp/Logging.h>
 
@@ -47,7 +48,7 @@ inline constexpr char NameJobExecutor[] = "JobExecutor";
  *   - job_result_out: Job completion results to JobQueue
  *   - job_history_out: Job results to JobDatabase for persistence
  */
-struct Ports {
+struct Ports : ::services::AutoClearPorts<Ports> {
     // Input from JobQueue (event-triggered)
     ::services::InputPort<Job> job_in;
 
@@ -59,6 +60,9 @@ struct Ports {
 
     // Control input (for pause/resume)
     ::services::InputPort<orchestrator::job_queue::ControlRequest> control_in;
+
+    // Register input ports for automatic clearing
+    REGISTER_INPUT_PORTS(job_in, control_in)
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -77,6 +81,7 @@ struct WorkerThread {
     bool completed{false};
     int exit_code{-1};
     std::string script;  // Original job script for reference
+    bool timeout_scheduled{false};  // Track if timeout action has been scheduled
 };
 
 /**
@@ -196,7 +201,9 @@ using Container = ::services::MicroServiceContainer<>;
  *   → RunningState (immediate)
  */
 struct InitState : public ::services::State<InitState, 0> {
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 /**
@@ -206,7 +213,9 @@ struct InitState : public ::services::State<InitState, 0> {
  *   → PausedState (on pause command)
  */
 struct RunningState : public ::services::State<RunningState, 1> {
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 /**
@@ -216,7 +225,9 @@ struct RunningState : public ::services::State<RunningState, 1> {
  *   → RunningState (on resume command)
  */
 struct PausedState : public ::services::State<PausedState, 2> {
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 // State set for FSM
@@ -265,14 +276,17 @@ public:
         States
     >;
 
+    // Default constructor
+    JobExecutor() : Base() {}
+
     // Constructor with configurable thread count
-    explicit JobExecutor(size_t max_threads = 4)
+    explicit JobExecutor(size_t max_threads)
         : Base()
     {
-        mStore.max_threads = max_threads;
+        getStore().max_threads = max_threads;
     }
 
-    // Inherit base constructors
+    // Inherit other base constructors
     using Base::Base;
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -280,49 +294,15 @@ public:
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Initialize reactor - set initial state
-     */
-    void initialize() override;
-
-    /**
-     * Heartbeat - initiate polling when jobs are active
+     * Periodic maintenance - initiate polling when jobs are active
      *
-     * Frequency: 100ms
+     * Frequency: 100ms (from heartbeatDuration())
      *
      * Operations:
      * - Check if polling should be initiated
      * - Schedule "poll_completions" physical action if jobs are active
-     *
-     * NOTE: In event-driven MicroServiceFSMReactor design, doHeartbeat() handles
-     * periodic work directly. FSM state step() methods are only for state
-     * transitions triggered by logical actions, not for heartbeat processing.
-     * This differs from traditional FSM designs where step() handles all inputs.
      */
-    void doHeartbeat(const ::services::LogicalTag& tag) override;
-
-    /**
-     * Event-driven logical action handler
-     *
-     * Actions:
-     * - "on_port_job_in": React to job submission
-     * - "on_port_control": React to control command
-     * - "timeout_<job_id>": Enforce job timeout
-     * - "poll_completions": Poll for completed jobs
-     */
-    void executeLogicalAction(const ::services::LogicalTag& tag,
-                              const std::string& action) override;
-
-    /**
-     * Clear input ports after each heartbeat
-     *
-     * Required by IReactor interface to prevent stale port data from persisting
-     * across heartbeat cycles. Manual implementation needed because
-     * ENABLE_AUTO_CLEAR_PORTS macro doesn't work with namespaced types.
-     */
-    void clearPorts() override {
-        mPorts.job_in.clear();
-        mPorts.control_in.clear();
-    }
+    void doPeriodicMaintenance(const ::services::LogicalTag& tag) override;
 
     /**
      * Heartbeat frequency override
@@ -333,90 +313,16 @@ public:
         return ::services::LogicalTime{100'000'000};  // 100ms
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Public Accessors (for testing)
-    // ──────────────────────────────────────────────────────────────────────────
-
-    Store& getStore() { return mStore; }
-    const Store& getStore() const { return mStore; }
-
-    Ports& getPorts() { return mPorts; }
-    const Ports& getPorts() const { return mPorts; }
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Internal Helpers (public for simplicity - could be private with friend)
-    // ──────────────────────────────────────────────────────────────────────────
-
     /**
-     * Check if system is currently paused
+     * Check if system is currently paused (convenience method)
      */
     bool isPaused() const {
-        return getCurrentState() == PausedState::index();
+        return Base::getCurrentState() == PausedState::index();
     }
-
-    /**
-     * Get current FSM state index
-     */
-    size_t getCurrentState() const {
-        return mCurrentState;
-    }
-
-protected:
-    size_t mCurrentState{InitState::index()};
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Protected Port I/O Orchestration Methods
-    // ──────────────────────────────────────────────────────────────────────────
-    //
-    // NOTE: These methods orchestrate port I/O and action scheduling.
-    // Business logic lives in Store pure functions (submitJob, pollCompletedJobs,
-    // cancelJob, substituteVariables) for testability. Protected methods just:
-    // 1. Read from input ports
-    // 2. Call Store business logic
-    // 3. Write to output ports
-    // 4. Schedule follow-up logical actions
-    //
-    // This follows the same pattern as JobQueue (see JobQueue.h lines 481-515).
-    // ──────────────────────────────────────────────────────────────────────────
-
-    /**
-     * Handle new job submission (reads job_in port, calls Store::submitJob)
-     */
-    void handleJobSubmission();
-
-    /**
-     * Handle control command (reads control_in port, transitions FSM)
-     */
-    void handleControl();
-
-    /**
-     * Poll for completed jobs and report results
-     * (calls Store::pollCompletedJobs, writes to result ports)
-     */
-    void pollCompletions();
-
-    /**
-     * Handle job timeout (calls Store::cancelJob, reports timeout error)
-     */
-    void handleTimeout(int64_t job_id);
-
-    /**
-     * Create JobResult from completed worker (pure utility function)
-     */
-    orchestrator::job_queue::JobResult createResult(const WorkerThread& worker);
 };
 
 } // namespace job_executor
 
 } // namespace orchestrator
 
-// Manual port clearing implementation
-namespace services {
-template<>
-inline void clearInputPorts<orchestrator::job_executor::Ports>(
-    orchestrator::job_executor::Ports& ports)
-{
-    ports.job_in.clear();
-    ports.control_in.clear();
-}
-}
+// Port clearing handled automatically via AutoClearPorts<Ports> + REGISTER_INPUT_PORTS

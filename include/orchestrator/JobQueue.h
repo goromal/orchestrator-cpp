@@ -12,6 +12,7 @@
 #include <mscpp/StateSet.h>
 #include <mscpp/MicroServiceContainer.h>
 #include <mscpp/Logging.h>
+#include <mscpp/StepTrigger.h>
 
 #include "orchestrator/Job.h"
 
@@ -117,7 +118,7 @@ struct QueueSnapshot {
  *   - execute_job_out: Jobs ready for execution to JobExecutor
  *   - save_snapshot_out: Periodic snapshot to JobDatabase
  */
-struct Ports {
+struct Ports : ::services::AutoClearPorts<Ports> {
     // Inputs from JobServer (event-triggered)
     ::services::InputPort<Job> new_job_in;
     ::services::InputPort<JobQuery> query_request_in;
@@ -139,6 +140,10 @@ struct Ports {
 
     // Input from JobDatabase (one-time at init)
     ::services::InputPort<QueueSnapshot> load_snapshot_in;
+
+    // Register input ports for automatic clearing
+    REGISTER_INPUT_PORTS(new_job_in, query_request_in, control_request_in,
+                        job_result_in, load_snapshot_in)
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -284,7 +289,9 @@ struct InitState : public ::services::State<InitState, 0> {
     /**
      * Entry action: Request snapshot from database
      */
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 /**
@@ -298,7 +305,9 @@ struct InitWaitState : public ::services::State<InitWaitState, 1> {
     /**
      * Check for snapshot load completion
      */
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 /**
@@ -311,7 +320,9 @@ struct InitFinalWaitState : public ::services::State<InitFinalWaitState, 2> {
     /**
      * Re-submit in-progress jobs to executor
      */
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 /**
@@ -324,7 +335,9 @@ struct RunningState : public ::services::State<RunningState, 3> {
     /**
      * Process queue operations normally
      */
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 /**
@@ -337,7 +350,9 @@ struct PausedState : public ::services::State<PausedState, 4> {
     /**
      * Process queries/control but don't execute jobs
      */
-    size_t step(Store& s, Ports& p, const Container& c);
+    size_t step(Store& s, Ports& p, const Container& c,
+                const ::services::LogicalTag& tag,
+                const ::services::StepTrigger& trigger);
 };
 
 // State set for FSM
@@ -397,45 +412,22 @@ public:
     using Base::Base;
 
     // ──────────────────────────────────────────────────────────────────────────
-    // IReactor Interface
+    // Constructor
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
-     * Initialize reactor - set initial state
+     * Constructor - uses default container
      */
-    void initialize() override;
-
-    /**
-     * Heartbeat - periodic work only (snapshot saves)
-     *
-     * Frequency: 1000ms (1 second)
-     *
-     * Operations:
-     * - Periodic snapshot save to database (every 10 seconds)
-     */
-    void doHeartbeat(const ::services::LogicalTag& tag) override;
-
-    /**
-     * Event-driven logical action handler
-     *
-     * Actions:
-     * - "on_port_new_job": React to new job submission
-     * - "on_port_job_result": React to job completion
-     * - "on_port_query": React to query request
-     * - "on_port_control": React to control command
-     * - "on_port_load_snapshot": React to snapshot load
-     * - "try_execute_jobs": Drain ready jobs to executor
-     */
-    void executeLogicalAction(const ::services::LogicalTag& tag,
-                              const std::string& action) override;
-
-    /**
-     * Clear input ports after each heartbeat
-     * (Auto-implemented via ENABLE_AUTO_CLEAR_PORTS)
-     */
-    void clearPorts() override {
-        // Auto-clearing is handled by ENABLE_AUTO_CLEAR_PORTS macro
+    JobQueue(const Container& container = Container{})
+        : Base(container)
+    {
+        // Port action mappings are handled by the framework based on port names
+        // Port connections will automatically trigger corresponding logical actions
     }
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // IReactor Interface
+    // ──────────────────────────────────────────────────────────────────────────
 
     /**
      * Heartbeat frequency override
@@ -446,88 +438,27 @@ public:
         return ::services::LogicalTime{1'000'000'000};  // 1 second
     }
 
-    // ──────────────────────────────────────────────────────────────────────────
-    // Public Accessors (for testing)
-    // ──────────────────────────────────────────────────────────────────────────
+protected:
+    /**
+     * Periodic maintenance (non-business-logic)
+     *
+     * Called during heartbeat for:
+     * - Periodic snapshot saves (every 60 seconds)
+     */
+    void doPeriodicMaintenance(const ::services::LogicalTag& tag);
 
-    Store& getStore() { return mStore; }
-    const Store& getStore() const { return mStore; }
-
-    Ports& getPorts() { return mPorts; }
-    const Ports& getPorts() const { return mPorts; }
-
     // ──────────────────────────────────────────────────────────────────────────
-    // Internal Helpers (public for simplicity - could be private with friend)
+    // Helper Methods for FSM States
     // ──────────────────────────────────────────────────────────────────────────
 
     /**
      * Check if system is currently paused
      */
-    bool isPaused() const {
-        return getCurrentState() == PausedState::index();
-    }
-
-    /**
-     * Get current FSM state index
-     */
-    size_t getCurrentState() const {
-        return mCurrentState;
-    }
-
-protected:
-    size_t mCurrentState{InitState::index()};
-
-    /**
-     * Drain ready jobs (no blockers) to executor
-     *
-     * Only executes if in RunningState
-     */
-    void drainReadyJobs();
-
-    /**
-     * Handle new job submission
-     */
-    void handleNewJob();
-
-    /**
-     * Handle job completion result
-     */
-    void handleJobResult();
-
-    /**
-     * Handle query request
-     */
-    void handleQuery();
-
-    /**
-     * Handle control command
-     */
-    void handleControl();
-
-    /**
-     * Handle snapshot load
-     */
-    void handleSnapshotLoad();
-
-    /**
-     * Save snapshot to database
-     */
-    void saveSnapshot();
+    bool isPaused() const;
 };
 
 } // namespace job_queue
 
 } // namespace orchestrator
 
-// Manual port clearing implementation (ENABLE_AUTO_CLEAR_PORTS macro doesn't work with namespaced types)
-namespace services {
-template<>
-inline void clearInputPorts<orchestrator::job_queue::Ports>(orchestrator::job_queue::Ports& ports)
-{
-    ports.new_job_in.clear();
-    ports.query_request_in.clear();
-    ports.control_request_in.clear();
-    ports.job_result_in.clear();
-    ports.load_snapshot_in.clear();
-}
-}
+// Port clearing handled automatically via AutoClearPorts<Ports> + REGISTER_INPUT_PORTS

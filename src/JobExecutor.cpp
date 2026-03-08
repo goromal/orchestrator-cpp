@@ -233,318 +233,378 @@ std::string Store::shellEscape(const std::string& str)
 // FSM State Implementations
 // ══════════════════════════════════════════════════════════════════════════════
 
-size_t InitState::step(Store& s, Ports& p, const Container& c)
+size_t InitState::step(Store& s, Ports& p, const Container& c,
+                       const ::services::LogicalTag& tag,
+                       const ::services::StepTrigger& trigger)
 {
-    (void)s;  // Unused
-    (void)p;  // Unused
-    (void)c;  // Unused
+    (void)s;
+    (void)p;
+    (void)c;
+    (void)tag;
+    (void)trigger;
 
     SPDLOG_INFO("JobExecutor initializing - transitioning to Running state");
-
-    // No initialization needed for executor (JobQueue handles restart recovery)
     return RunningState::index();
 }
 
-size_t RunningState::step(Store& s, Ports& p, const Container& c)
+size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c,
+                          [[maybe_unused]] const ::services::LogicalTag& tag,
+                          const ::services::StepTrigger& trigger)
 {
-    (void)s;  // Unused
-    (void)p;  // Unused
-    (void)c;  // Unused
 
-    // State transitions happen via logical actions (control commands)
-    // This step() is only called if FSM needs to re-evaluate state
-    return RunningState::index();  // Stay in running
+    // Handle logical actions (port-triggered events)
+    if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
+    {
+        // Handle new job submission
+        if (trigger.action_name == "on_port_job_in")
+        {
+            if (p.job_in.is_present())
+            {
+                const Job& job = p.job_in.get();
+
+                // Try to submit job (Store handles thread availability check)
+                bool submitted = s.submitJob(job);
+
+                if (submitted)
+                {
+                    // Schedule timeout action if timeout is set
+                    if (job.timeoutSeconds > 0)
+                    {
+                        // NOTE: Cannot call schedulePhysicalAction from FSM state
+                        // This will be handled via output port pattern
+                        SPDLOG_DEBUG("Job {} submitted, timeout scheduling handled by reactor",
+                                    job.id);
+                    }
+                }
+                else
+                {
+                    // Submission failed - report error
+                    SPDLOG_ERROR("Failed to submit job {}", job.id);
+
+                    orchestrator::job_queue::JobResult result;
+                    result.job_id = job.id;
+                    result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
+                    result.outputs = std::vector<std::string>{
+                        "Failed to start job: no threads available"
+                    };
+
+                    p.job_result_out.set(result);
+                    p.job_history_out.set(result);
+                }
+            }
+        }
+        // Handle control commands
+        else if (trigger.action_name == "on_port_control_in")
+        {
+            if (p.control_in.is_present())
+            {
+                const orchestrator::job_queue::ControlRequest& control = p.control_in.get();
+
+                if (control.command == orchestrator::job_queue::ControlRequest::Command::PAUSE)
+                {
+                    SPDLOG_INFO("Pausing executor - will not accept new jobs");
+                    return PausedState::index();
+                }
+                else if (control.command == orchestrator::job_queue::ControlRequest::Command::CANCEL)
+                {
+                    if (control.target_job_id >= 0)
+                    {
+                        SPDLOG_INFO("Cancelling job {}", control.target_job_id);
+                        bool cancelled = s.cancelJob(control.target_job_id);
+
+                        if (cancelled)
+                        {
+                            // Report cancellation
+                            orchestrator::job_queue::JobResult result;
+                            result.job_id = control.target_job_id;
+                            result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+                            result.outputs = std::vector<std::string>{"Job cancelled by user"};
+
+                            p.job_result_out.set(result);
+                            p.job_history_out.set(result);
+
+                            // Remove from active jobs
+                            s.active_jobs.erase(control.target_job_id);
+                        }
+                    }
+                    else
+                    {
+                        SPDLOG_WARN("Cancel command requires target_job_id >= 0");
+                    }
+                }
+            }
+        }
+        // Handle polling completions
+        else if (trigger.action_name == "poll_completions")
+        {
+            // Call Store business logic
+            std::vector<WorkerThread> completed = s.pollCompletedJobs();
+
+            // Report results for all completed jobs
+            for (const WorkerThread& worker : completed)
+            {
+                orchestrator::job_queue::JobResult result;
+                result.job_id = worker.job_id;
+
+                // Determine status from exit code
+                if (worker.exit_code == 0)
+                {
+                    result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE;
+                }
+                else
+                {
+                    result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
+                }
+
+                // For now, outputs are just the exit code message
+                if (worker.outputs.empty())
+                {
+                    if (worker.exit_code == 0)
+                    {
+                        result.outputs = std::vector<std::string>{"Job completed successfully"};
+                    }
+                    else
+                    {
+                        result.outputs = std::vector<std::string>{
+                            "Job exited with code " + std::to_string(worker.exit_code)
+                        };
+                    }
+                }
+                else
+                {
+                    result.outputs = worker.outputs;
+                }
+
+                p.job_result_out.set(result);
+                p.job_history_out.set(result);
+
+                // Remove from active jobs
+                s.active_jobs.erase(worker.job_id);
+            }
+
+            if (!completed.empty())
+            {
+                SPDLOG_DEBUG("Polled {} completed jobs", completed.size());
+            }
+
+            // NOTE: Re-scheduling poll_completions will be handled by doPeriodicMaintenance()
+            // We don't set polling_active here since it's managed at the reactor level
+        }
+        // Handle job timeout
+        else if (trigger.action_name.substr(0, 8) == "timeout_")
+        {
+            // Parse job ID from action name
+            int64_t job_id = std::stol(trigger.action_name.substr(8));
+
+            auto it = s.active_jobs.find(job_id);
+
+            if (it == s.active_jobs.end())
+            {
+                SPDLOG_DEBUG("Timeout for job {} but job not found (may have already completed)",
+                            job_id);
+            }
+            else
+            {
+                WorkerThread& worker = it->second;
+
+                if (worker.completed)
+                {
+                    SPDLOG_DEBUG("Timeout for job {} but job already completed", job_id);
+                }
+                else
+                {
+                    // Job still running - kill it
+                    SPDLOG_WARN("Job {} timed out after {}s - killing",
+                               job_id, worker.timeout_seconds);
+
+                    bool killed = s.cancelJob(job_id);
+
+                    if (killed)
+                    {
+                        // Report timeout error
+                        orchestrator::job_queue::JobResult result;
+                        result.job_id = job_id;
+                        result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
+                        result.outputs = std::vector<std::string>{
+                            "Job timed out after " + std::to_string(worker.timeout_seconds) +
+                            " seconds"
+                        };
+
+                        p.job_result_out.set(result);
+                        p.job_history_out.set(result);
+
+                        // Remove from active jobs
+                        s.active_jobs.erase(job_id);
+                    }
+                }
+            }
+        }
+    }
+
+    return RunningState::index();
 }
 
-size_t PausedState::step(Store& s, Ports& p, const Container& c)
+size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c,
+                         [[maybe_unused]] const ::services::LogicalTag& tag,
+                         const ::services::StepTrigger& trigger)
 {
-    (void)s;  // Unused
-    (void)p;  // Unused
-    (void)c;  // Unused
 
-    // State transitions happen via logical actions (control commands)
-    // This step() is only called if FSM needs to re-evaluate state
-    return PausedState::index();  // Stay paused
+    // Handle logical actions
+    if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
+    {
+        // Reject new jobs when paused
+        if (trigger.action_name == "on_port_job_in")
+        {
+            if (p.job_in.is_present())
+            {
+                const Job& job = p.job_in.get();
+
+                SPDLOG_INFO("Rejecting job {} - executor is paused", job.id);
+
+                orchestrator::job_queue::JobResult result;
+                result.job_id = job.id;
+                result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
+                result.outputs = std::vector<std::string>{"Executor is paused"};
+
+                p.job_result_out.set(result);
+                p.job_history_out.set(result);
+            }
+        }
+        // Handle control commands
+        else if (trigger.action_name == "on_port_control_in")
+        {
+            if (p.control_in.is_present())
+            {
+                const orchestrator::job_queue::ControlRequest& control = p.control_in.get();
+
+                if (control.command == orchestrator::job_queue::ControlRequest::Command::RESUME)
+                {
+                    SPDLOG_INFO("Resuming executor - accepting new jobs");
+                    return RunningState::index();
+                }
+                else if (control.command == orchestrator::job_queue::ControlRequest::Command::CANCEL)
+                {
+                    if (control.target_job_id >= 0)
+                    {
+                        SPDLOG_INFO("Cancelling job {}", control.target_job_id);
+                        bool cancelled = s.cancelJob(control.target_job_id);
+
+                        if (cancelled)
+                        {
+                            orchestrator::job_queue::JobResult result;
+                            result.job_id = control.target_job_id;
+                            result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
+                            result.outputs = std::vector<std::string>{"Job cancelled by user"};
+
+                            p.job_result_out.set(result);
+                            p.job_history_out.set(result);
+
+                            s.active_jobs.erase(control.target_job_id);
+                        }
+                    }
+                }
+            }
+        }
+        // Still poll for completions even when paused
+        else if (trigger.action_name == "poll_completions")
+        {
+            std::vector<WorkerThread> completed = s.pollCompletedJobs();
+
+            for (const WorkerThread& worker : completed)
+            {
+                orchestrator::job_queue::JobResult result;
+                result.job_id = worker.job_id;
+
+                if (worker.exit_code == 0)
+                {
+                    result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE;
+                    result.outputs = std::vector<std::string>{"Job completed successfully"};
+                }
+                else
+                {
+                    result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
+                    result.outputs = std::vector<std::string>{
+                        "Job exited with code " + std::to_string(worker.exit_code)
+                    };
+                }
+
+                p.job_result_out.set(result);
+                p.job_history_out.set(result);
+
+                s.active_jobs.erase(worker.job_id);
+            }
+        }
+        // Handle timeouts even when paused
+        else if (trigger.action_name.substr(0, 8) == "timeout_")
+        {
+            int64_t job_id = std::stol(trigger.action_name.substr(8));
+
+            auto it = s.active_jobs.find(job_id);
+
+            if (it != s.active_jobs.end() && !it->second.completed)
+            {
+                SPDLOG_WARN("Job {} timed out (paused state) - killing", job_id);
+
+                s.cancelJob(job_id);
+
+                orchestrator::job_queue::JobResult result;
+                result.job_id = job_id;
+                result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
+                result.outputs = std::vector<std::string>{
+                    "Job timed out after " + std::to_string(it->second.timeout_seconds) + " seconds"
+                };
+
+                p.job_result_out.set(result);
+                p.job_history_out.set(result);
+
+                s.active_jobs.erase(job_id);
+            }
+        }
+    }
+
+    return PausedState::index();
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
 // JobExecutor Reactor Implementation
 // ══════════════════════════════════════════════════════════════════════════════
 
-void JobExecutor::initialize()
+void JobExecutor::doPeriodicMaintenance(const ::services::LogicalTag& tag)
 {
-    SPDLOG_INFO("JobExecutor reactor initialized with {} max threads", mStore.max_threads);
-    mCurrentState = InitState::index();
-
-    // Transition to running immediately
-    mCurrentState = InitState{}.step(mStore, mPorts, Container{});
-}
-
-void JobExecutor::doHeartbeat(const ::services::LogicalTag& tag)
-{
-    (void)tag;  // Unused
+    (void)tag;
 
     // Initiate polling if jobs are active and polling not already scheduled
-    if (mStore.hasActiveJobs() && !mStore.polling_active)
+    if (getStore().hasActiveJobs() && !getStore().polling_active)
     {
-        scheduleLogicalAction("poll_completions");
-        mStore.polling_active = true;
+        Base::scheduleLogicalAction("poll_completions");
+        getStore().polling_active = true;
     }
-}
 
-void JobExecutor::executeLogicalAction(const ::services::LogicalTag& tag,
-                                       const std::string& action)
-{
-    (void)tag;  // Unused for now
-
-    if (action == "on_port_job_in")
+    // Re-schedule polling if jobs still active
+    if (getStore().polling_active && getStore().hasActiveJobs())
     {
-        handleJobSubmission();
+        Base::schedulePhysicalAction(::services::LogicalTime{50'000'000}, "poll_completions");
     }
-    else if (action == "on_port_control_in")
+    else if (getStore().polling_active && !getStore().hasActiveJobs())
     {
-        handleControl();
+        getStore().polling_active = false;
     }
-    else if (action == "poll_completions")
-    {
-        pollCompletions();
 
-        // Re-schedule polling if jobs still active
-        if (mStore.hasActiveJobs())
+    // Schedule timeout actions for newly submitted jobs
+    // NOTE: This is a workaround since FSM states can't call schedulePhysicalAction
+    // We check for jobs that don't have a timeout scheduled yet
+    for (auto& [job_id, worker] : getStore().active_jobs)
+    {
+        if (worker.timeout_seconds > 0 && !worker.timeout_scheduled)
         {
-            schedulePhysicalAction(::services::LogicalTime{50'000'000}, "poll_completions");  // 50ms
-        }
-        else
-        {
-            mStore.polling_active = false;
+            std::string timeout_action = "timeout_" + std::to_string(job_id);
+            int64_t timeout_ns = worker.timeout_seconds * 1'000'000'000LL;
+            Base::schedulePhysicalAction(::services::LogicalTime{timeout_ns}, timeout_action);
+
+            worker.timeout_scheduled = true;
+            SPDLOG_DEBUG("Scheduled timeout for job {} in {}s", job_id, worker.timeout_seconds);
         }
     }
-    else if (action.substr(0, 8) == "timeout_")
-    {
-        // Parse job ID from action name
-        int64_t job_id = std::stol(action.substr(8));
-        handleTimeout(job_id);
-    }
-    else
-    {
-        SPDLOG_WARN("Unknown logical action: {}", action);
-    }
-}
-
-// ══════════════════════════════════════════════════════════════════════════════
-// Protected Port I/O Orchestration Methods
-// ══════════════════════════════════════════════════════════════════════════════
-
-void JobExecutor::handleJobSubmission()
-{
-    if (!mPorts.job_in.is_present())
-    {
-        SPDLOG_WARN("handleJobSubmission called but no job on port");
-        return;
-    }
-
-    const Job& job = mPorts.job_in.get();
-
-    // Check if paused - reject new jobs
-    if (isPaused())
-    {
-        SPDLOG_INFO("Rejecting job {} - executor is paused", job.id);
-
-        orchestrator::job_queue::JobResult result;
-        result.job_id = job.id;
-        result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
-        result.outputs = std::vector<std::string>{"Executor is paused"};
-
-        mPorts.job_result_out.set(result);
-        mPorts.job_history_out.set(result);
-        return;
-    }
-
-    // Try to submit job (Store handles thread availability check)
-    bool submitted = mStore.submitJob(job);
-
-    if (submitted)
-    {
-        // Schedule timeout action if timeout is set
-        if (job.timeoutSeconds > 0)
-        {
-            std::string timeout_action = "timeout_" + std::to_string(job.id);
-            int64_t timeout_ns = job.timeoutSeconds * 1'000'000'000LL;
-            schedulePhysicalAction(::services::LogicalTime{timeout_ns}, timeout_action);
-
-            SPDLOG_DEBUG("Scheduled timeout for job {} in {}s", job.id, job.timeoutSeconds);
-        }
-    }
-    else
-    {
-        // Submission failed - report error
-        SPDLOG_ERROR("Failed to submit job {}", job.id);
-
-        orchestrator::job_queue::JobResult result;
-        result.job_id = job.id;
-        result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
-        result.outputs = std::vector<std::string>{"Failed to start job: no threads available"};
-
-        mPorts.job_result_out.set(result);
-        mPorts.job_history_out.set(result);
-    }
-}
-
-void JobExecutor::handleControl()
-{
-    if (!mPorts.control_in.is_present())
-    {
-        SPDLOG_WARN("handleControl called but no control on port");
-        return;
-    }
-
-    const orchestrator::job_queue::ControlRequest& control = mPorts.control_in.get();
-
-    switch (control.command)
-    {
-        case orchestrator::job_queue::ControlRequest::Command::PAUSE:
-            SPDLOG_INFO("Pausing executor - will not accept new jobs");
-            mCurrentState = PausedState::index();
-            break;
-
-        case orchestrator::job_queue::ControlRequest::Command::RESUME:
-            SPDLOG_INFO("Resuming executor - accepting new jobs");
-            mCurrentState = RunningState::index();
-            break;
-
-        case orchestrator::job_queue::ControlRequest::Command::CANCEL:
-            if (control.target_job_id >= 0)
-            {
-                SPDLOG_INFO("Cancelling job {}", control.target_job_id);
-                bool cancelled = mStore.cancelJob(control.target_job_id);
-
-                if (cancelled)
-                {
-                    // Report cancellation
-                    orchestrator::job_queue::JobResult result;
-                    result.job_id = control.target_job_id;
-                    result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED;
-                    result.outputs = std::vector<std::string>{"Job cancelled by user"};
-
-                    mPorts.job_result_out.set(result);
-                    mPorts.job_history_out.set(result);
-
-                    // Remove from active jobs
-                    mStore.active_jobs.erase(control.target_job_id);
-                }
-            }
-            else
-            {
-                SPDLOG_WARN("Cancel command requires target_job_id >= 0");
-            }
-            break;
-
-        default:
-            SPDLOG_WARN("Unknown control command");
-            break;
-    }
-}
-
-void JobExecutor::pollCompletions()
-{
-    // Call Store business logic
-    std::vector<WorkerThread> completed = mStore.pollCompletedJobs();
-
-    // Report results for all completed jobs
-    for (const WorkerThread& worker : completed)
-    {
-        orchestrator::job_queue::JobResult result = createResult(worker);
-
-        mPorts.job_result_out.set(result);
-        mPorts.job_history_out.set(result);
-
-        // Remove from active jobs
-        mStore.active_jobs.erase(worker.job_id);
-    }
-
-    if (!completed.empty())
-    {
-        SPDLOG_DEBUG("Polled {} completed jobs", completed.size());
-    }
-}
-
-void JobExecutor::handleTimeout(int64_t job_id)
-{
-    auto it = mStore.active_jobs.find(job_id);
-
-    if (it == mStore.active_jobs.end())
-    {
-        SPDLOG_DEBUG("Timeout for job {} but job not found (may have already completed)", job_id);
-        return;
-    }
-
-    WorkerThread& worker = it->second;
-
-    if (worker.completed)
-    {
-        SPDLOG_DEBUG("Timeout for job {} but job already completed", job_id);
-        return;
-    }
-
-    // Job still running - kill it
-    SPDLOG_WARN("Job {} timed out after {}s - killing", job_id, worker.timeout_seconds);
-
-    bool killed = mStore.cancelJob(job_id);
-
-    if (killed)
-    {
-        // Report timeout error
-        orchestrator::job_queue::JobResult result;
-        result.job_id = job_id;
-        result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
-        result.outputs = std::vector<std::string>{
-            "Job timed out after " + std::to_string(worker.timeout_seconds) + " seconds"
-        };
-
-        mPorts.job_result_out.set(result);
-        mPorts.job_history_out.set(result);
-
-        // Remove from active jobs
-        mStore.active_jobs.erase(job_id);
-    }
-}
-
-orchestrator::job_queue::JobResult JobExecutor::createResult(const WorkerThread& worker)
-{
-    orchestrator::job_queue::JobResult result;
-    result.job_id = worker.job_id;
-
-    // Determine status from exit code
-    if (worker.exit_code == 0)
-    {
-        result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE;
-    }
-    else
-    {
-        result.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR;
-    }
-
-    // For now, outputs are just the exit code message
-    // TODO: Capture actual stdout/stderr in Stage 8
-    if (worker.outputs.empty())
-    {
-        if (worker.exit_code == 0)
-        {
-            result.outputs = std::vector<std::string>{"Job completed successfully"};
-        }
-        else
-        {
-            result.outputs = std::vector<std::string>{
-                "Job exited with code " + std::to_string(worker.exit_code)
-            };
-        }
-    }
-    else
-    {
-        result.outputs = worker.outputs;
-    }
-
-    return result;
 }
 
 } // namespace job_executor

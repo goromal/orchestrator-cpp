@@ -9,6 +9,7 @@ endif()
 
 option(BUILD_TESTS "Build Tests" ON)
 option(SECONDARY_SANITIZERS "Run Secondary Sanitizers" OFF)
+option(USE_LOCAL_MSCPP "Use local mscpp from ../mscpp instead of system package" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -35,13 +36,15 @@ endif()
 find_package(mscpp REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(Catch2 REQUIRED)
+find_package(SQLite3 REQUIRED)
 
-set(LIB_DEPS mscpp protobuf)
+set(LIB_DEPS mscpp protobuf SQLite::SQLite3)
 set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 
 add_library(${PROJ_NAME}
   src/JobQueue.cpp
   src/JobExecutor.cpp
+  src/JobDatabase.cpp
 )
 target_include_directories(${PROJ_NAME} PUBLIC ${LIB_INCS})
 target_link_libraries(${PROJ_NAME} PUBLIC ${LIB_DEPS})
@@ -100,10 +103,28 @@ if (BUILD_TESTS)
         COMMAND test-jobexecutor
     )
 
+    add_executable(test-jobdatabase
+        src/JobDatabase.cpp
+        src/JobQueue.cpp
+        tests/JobDatabaseTest.cpp
+    )
+    target_include_directories(test-jobdatabase PUBLIC ${LIB_INCS})
+    target_link_libraries(test-jobdatabase Catch2::Catch2 ${Boost_LIBRARIES} ${LIB_DEPS})
+    add_test(NAME test-jobdatabase COMMAND test-jobdatabase)
+
+    add_custom_command(
+        TARGET test-jobdatabase
+        COMMENT "Run JobDatabase unit tests"
+        POST_BUILD
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMAND test-jobdatabase
+    )
+
     include(CTest)
     include(Catch)
     catch_discover_tests(test-jobqueue)
     catch_discover_tests(test-jobexecutor)
+    catch_discover_tests(test-jobdatabase)
 endif()
 
 include(CMakePackageConfigHelpers)
