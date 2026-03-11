@@ -33,10 +33,15 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   endif()
 endif()
 
-find_package(mscpp REQUIRED)
+if(USE_LOCAL_MSCPP)
+  add_subdirectory(../mscpp ${CMAKE_BINARY_DIR}/mscpp)
+else()
+  find_package(mscpp REQUIRED)
+endif()
 find_package(spdlog REQUIRED)
 find_package(Catch2 REQUIRED)
 find_package(SQLite3 REQUIRED)
+find_package(Protobuf REQUIRED)
 
 set(LIB_DEPS mscpp protobuf SQLite::SQLite3)
 set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -45,6 +50,7 @@ add_library(${PROJ_NAME}
   src/JobQueue.cpp
   src/JobExecutor.cpp
   src/JobDatabase.cpp
+  src/JobServer.cpp
 )
 target_include_directories(${PROJ_NAME} PUBLIC ${LIB_INCS})
 target_link_libraries(${PROJ_NAME} PUBLIC ${LIB_DEPS})
@@ -57,6 +63,7 @@ target_compile_definitions(${PROJ_NAME} INTERFACE
 add_executable(${PROJ_NAME}d
   src/main.cpp
 )
+
 target_include_directories(${PROJ_NAME}d
   PRIVATE
   ${Boost_INCLUDE_DIR}
@@ -64,6 +71,8 @@ target_include_directories(${PROJ_NAME}d
 target_link_libraries(${PROJ_NAME}d
   ${PROJ_NAME}
   ${Boost_LIBRARIES}
+  grpc++
+  protobuf
 )
 
 if (BUILD_TESTS)

@@ -251,6 +251,8 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
                           [[maybe_unused]] const ::services::LogicalTag& tag,
                           const ::services::StepTrigger& trigger)
 {
+    (void)c;
+    (void)tag;
 
     // Handle logical actions (port-triggered events)
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
@@ -448,6 +450,8 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
                          [[maybe_unused]] const ::services::LogicalTag& tag,
                          const ::services::StepTrigger& trigger)
 {
+    (void)c;
+    (void)tag;
 
     // Handle logical actions
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)

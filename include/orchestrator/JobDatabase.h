@@ -397,6 +397,9 @@ public:
     // Inherit constructors
     using Base::Base;
 
+    // Custom constructor for database initialization
+    JobDatabase(const Container& container, const std::string& db_path);
+
     // ──────────────────────────────────────────────────────────────────────────
     // IReactor Interface
     // ──────────────────────────────────────────────────────────────────────────

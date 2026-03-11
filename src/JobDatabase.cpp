@@ -755,6 +755,20 @@ void JobDatabase::doPeriodicMaintenance(const ::services::LogicalTag& tag)
     }
 }
 
+// ══════════════════════════════════════════════════════════════════════════════
+// JobDatabase Constructor
+// ══════════════════════════════════════════════════════════════════════════════
+
+JobDatabase::JobDatabase(const Container& container, const std::string& db_path)
+    : Base(container)
+{
+    // Initialize database with provided path
+    if (!getStore().db.open(db_path))
+    {
+        SPDLOG_ERROR("Failed to open database at {}", db_path);
+    }
+}
+
 } // namespace job_database
 
 } // namespace orchestrator

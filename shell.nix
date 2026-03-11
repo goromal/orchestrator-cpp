@@ -1,6 +1,6 @@
 let
   pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/9d703eccfd7421964a5fe90106efb358eebf70d0.tar.gz"))
+    ("https://github.com/goromal/anixpkgs/archive/5f50d09b512c87349b3411bc90a0291838878e5e.tar.gz"))
     { };
 in with pkgs;
 mkShell {
