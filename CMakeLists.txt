@@ -42,6 +42,7 @@ find_package(spdlog REQUIRED)
 find_package(Catch2 REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(Protobuf REQUIRED)
+find_package(Boost REQUIRED COMPONENTS program_options)
 
 set(LIB_DEPS mscpp protobuf SQLite::SQLite3)
 set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -70,8 +71,13 @@ target_include_directories(${PROJ_NAME}d
 )
 target_link_libraries(${PROJ_NAME}d
   ${PROJ_NAME}
-  ${Boost_LIBRARIES}
+  Boost::program_options
+  aapis-cpp
   grpc++
+  gpr
+  absl_log_internal_check_op
+  absl_log_internal_message
+  absl_log_internal_nullguard
   protobuf
 )
 
