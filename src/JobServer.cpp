@@ -85,9 +85,11 @@ size_t RunningState::step(Store& s, Ports& p,
             std::cout << "DEBUG: KickoffJob handler, port is_present=" << p.kickoff_job_request_in.is_present() << std::endl;
             if (p.kickoff_job_request_in.is_present()) {
                 auto request = p.kickoff_job_request_in.get();
+                std::cout << "DEBUG: Got kickoff request for job_type=" << request.job_type() << std::endl;
 
                 // Validate request
                 auto validation = s.validateKickoffJobRequest(request);
+                std::cout << "DEBUG: Validation result: is_valid=" << validation.is_valid << std::endl;
                 if (!validation.is_valid) {
                     aapis::orchestrator::v2::KickoffJobResponse response;
                     response.set_success(false);
@@ -96,16 +98,20 @@ size_t RunningState::step(Store& s, Ports& p,
                     SPDLOG_WARN("KickoffJob validation failed: {}", validation.error_message);
                     p.kickoff_job_response_out.set(response);
                 } else {
+                    std::cout << "DEBUG: Validation passed, converting to Job" << std::endl;
                     // Convert to internal Job structure
                     Job job = s.convertToJob(request);
+                    std::cout << "DEBUG: Converted to Job, sending to JobQueue via new_job_out" << std::endl;
 
                     // Send to JobQueue
                     p.new_job_out.set(job);
+                    std::cout << "DEBUG: new_job_out.set() called successfully" << std::endl;
 
                     // Track pending request - response will be sent when new_job_id_in arrives
                     s.pending_kickoff = true;
                     s.pending_kickoff_request = request;
                     SPDLOG_INFO("Kicked off job type: {} (awaiting job ID from JobQueue)", request.job_type());
+                    std::cout << "DEBUG: Waiting for new_job_id_in from JobQueue" << std::endl;
                     // NOTE: Response NOT sent here - will be sent when new_job_id_in is present
                 }
 
