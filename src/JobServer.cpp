@@ -42,7 +42,9 @@ size_t RunningState::step(Store& s, Ports& p,
         // DefineJob RPC
         // ──────────────────────────────────────────────────────────────────
         if (trigger.action_name == "define_job_request") {
+            SPDLOG_INFO("RunningState: Processing define_job_request action");
             if (p.define_job_request_in.is_present()) {
+                SPDLOG_INFO("RunningState: define_job_request_in port is PRESENT");
                 auto request = p.define_job_request_in.get();
                 aapis::orchestrator::v2::DefineJobResponse response;
 
@@ -66,6 +68,11 @@ size_t RunningState::step(Store& s, Ports& p,
 
                 s.requests_handled++;
                 p.define_job_response_out.set(response);
+                SPDLOG_INFO("RunningState: Set define_job_response_out port (success={}, message={})",
+                           response.success(), response.message());
+            }
+            else {
+                SPDLOG_WARN("RunningState: define_job_request_in port NOT PRESENT!");
             }
         }
 
@@ -250,10 +257,13 @@ void JobServer::processActionData(const std::string& action_name, const std::any
     // Transfer action data to appropriate input ports
     // This fixes the missing data flow in mscpp's IOAdapter implementation
 
+    SPDLOG_INFO("JobServer::processActionData called for action: {}", action_name);
+
     try {
         if (action_name == "define_job_request") {
             auto request = std::any_cast<aapis::orchestrator::v2::DefineJobRequest>(action_data);
             getPorts().define_job_request_in.set(request);
+            SPDLOG_INFO("Set define_job_request_in port with job_type={}", request.job_type());
         }
         else if (action_name == "kickoff_job_request") {
             auto request = std::any_cast<aapis::orchestrator::v2::KickoffJobRequest>(action_data);
