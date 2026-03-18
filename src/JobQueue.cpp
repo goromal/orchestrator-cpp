@@ -439,15 +439,21 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
             SPDLOG_INFO("JobQueue assigned ID {} to new job", id);
 
             // If job is ready (no blockers), try to execute immediately
+            std::cout << "DEBUG: Checking if job ready for inline dispatch, numBlockers=" << job.numBlockers() << std::endl;
             if (job.numBlockers() == 0)
             {
+                std::cout << "DEBUG: Job has no blockers, checking pendingJobs for inline dispatch, size=" << s.pendingJobs.size() << std::endl;
                 // Drain ready jobs inline
                 for (auto& j : s.pendingJobs)
                 {
+                    std::cout << "DEBUG: Inline dispatch checking job " << j.id << ", numBlockers=" << j.numBlockers()
+                              << ", status=" << static_cast<int>(j.status) << std::endl;
+
                     if (j.numBlockers() == 0 &&
                         j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
                     {
-                        SPDLOG_INFO("JobQueue sending job {} to executor", j.id);
+                        SPDLOG_INFO("JobQueue sending job {} to executor (inline)", j.id);
+                        std::cout << "DEBUG: Inline dispatching job " << j.id << " to executor" << std::endl;
                         p.execute_job_out.set(j);
                         j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
                         s.activeJobIds[j.id] = true;
