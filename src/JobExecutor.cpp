@@ -161,6 +161,13 @@ bool Store::cancelJob(int64_t job_id)
 
 std::string Store::substituteVariables(const std::string& script, const Job& job)
 {
+    std::cout << "DEBUG: substituteVariables input script: " << script << std::endl;
+    std::cout << "DEBUG: job.inputs.size() = " << job.inputs.size() << std::endl;
+    for (size_t i = 0; i < job.inputs.size(); ++i)
+    {
+        std::cout << "DEBUG: job.inputs[" << i << "] = " << job.inputs[i] << std::endl;
+    }
+
     std::string result = script;
 
     // Build INPUT_IDS array from independentBlockers + relevantBlockers
@@ -213,6 +220,22 @@ std::string Store::substituteVariables(const std::string& script, const Job& job
         result.replace(pos, 11, args_array);
         pos += args_array.length();
     }
+
+    // Substitute individual input arguments: {input_0}, {input_1}, etc.
+    // Match pattern: {input_N} where N is a digit
+    for (size_t i = 0; i < job.inputs.size(); ++i)
+    {
+        std::string placeholder = "{input_" + std::to_string(i) + "}";
+        pos = 0;
+        while ((pos = result.find(placeholder, pos)) != std::string::npos)
+        {
+            std::cout << "DEBUG: Replacing " << placeholder << " with " << job.inputs[i] << std::endl;
+            result.replace(pos, placeholder.length(), job.inputs[i]);
+            pos += job.inputs[i].length();
+        }
+    }
+
+    std::cout << "DEBUG: substituteVariables output script: " << result << std::endl;
 
     return result;
 }
