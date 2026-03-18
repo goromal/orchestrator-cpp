@@ -286,18 +286,7 @@ int main(int argc, char* argv[])
     std::cout << "Port connections established." << std::endl;
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Create gRPC Adapter for JobServer
-    // ──────────────────────────────────────────────────────────────────────────
-
-    std::string grpc_address = "0.0.0.0:" + std::to_string(grpc_port);
-    ::services::GrpcAdapter<orchestrator::job_server::JobServer, OrchestratorServiceImpl>
-        grpc_adapter(job_server, grpc_address);
-
-    std::cout << "Starting gRPC server on " << grpc_address << "..." << std::endl;
-    grpc_adapter.start();
-
-    // ──────────────────────────────────────────────────────────────────────────
-    // Start Reactor Scheduler in Background Thread
+    // Start Reactor Scheduler in Background Thread (BEFORE gRPC server!)
     // ──────────────────────────────────────────────────────────────────────────
 
     std::thread scheduler_thread([&scheduler]() {
@@ -305,6 +294,20 @@ int main(int argc, char* argv[])
         scheduler->run();
         std::cout << "Reactor scheduler stopped." << std::endl;
     });
+
+    // Give scheduler a moment to initialize
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Create gRPC Adapter for JobServer
+    // ──────────────────────────────────────────────────────────────────────────
+
+    std::string grpc_address = "0.0.0.0:" + std::to_string(grpc_port);
+    ::services::GrpcAdapter<orchestrator::job_server::JobServer, OrchestratorServiceImpl>
+        grpc_adapter(job_server, grpc_address);
+
+    std::cout << "Starting gRPC server on " + grpc_address << "..." << std::endl;
+    grpc_adapter.start();
 
     std::cout << "Orchestrator service is running. Press Ctrl+C to shutdown." << std::endl;
 
