@@ -409,7 +409,7 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
     // DEBUG: Log all triggers
     if (trigger.type == ::services::StepTrigger::Type::HEARTBEAT)
     {
-        std::cout << "DEBUG: JobQueue RunningState HEARTBEAT" << std::endl;
+        std::cout << "DEBUG: JobQueue RunningState HEARTBEAT, pendingJobs.size=" << s.pendingJobs.size() << std::endl;
     }
 
     // Handle all logical actions based on StepTrigger
@@ -430,6 +430,8 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
 
             // Register job and assign ID (not paused in running state)
             int64_t id = s.addAndRegisterNewJob(job, false);
+
+            std::cout << "DEBUG: JobQueue added job to pendingJobs, id=" << id << ", size=" << s.pendingJobs.size() << std::endl;
 
             // Send response
             p.new_job_id_out.set(id);
@@ -568,6 +570,9 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
         // Check for jobs that are ready to execute (no blockers)
         for (auto& job : s.pendingJobs)
         {
+            std::cout << "DEBUG: Checking job " << job.id << ", status=" << static_cast<int>(job.status)
+                      << ", in activeJobIds=" << (s.activeJobIds.find(job.id) != s.activeJobIds.end()) << std::endl;
+
             if (job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED &&
                 s.activeJobIds.find(job.id) == s.activeJobIds.end())
             {
