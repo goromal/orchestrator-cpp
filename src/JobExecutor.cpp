@@ -257,9 +257,13 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
     // Handle logical actions (port-triggered events)
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
     {
+        std::cout << "DEBUG: JobExecutor RunningState logical action: " << trigger.action_name << std::endl;
+
         // Handle new job submission
-        if (trigger.action_name == "on_port_job_in")
+        // Connection name is "queue_to_executor_job" so action is "on_port_queue_to_executor_job"
+        if (trigger.action_name == "on_port_queue_to_executor_job")
         {
+            std::cout << "DEBUG: JobExecutor received job from JobQueue" << std::endl;
             if (p.job_in.is_present())
             {
                 const Job& job = p.job_in.get();
