@@ -180,8 +180,25 @@ void Store::processJobResult(const JobResult& result, bool paused)
 {
     int64_t jobId = result.job_id;
 
+    std::cout << "DEBUG: processJobResult for job " << jobId << ", status=" << static_cast<int>(result.status) << std::endl;
+
     // Remove from active jobs
     activeJobIds.erase(jobId);
+
+    // Update the completed job's status in pendingJobs
+    auto completed_job_it = std::find_if(pendingJobs.begin(), pendingJobs.end(),
+                                         [jobId](const Job& j) { return j.id == jobId; });
+    if (completed_job_it != pendingJobs.end())
+    {
+        completed_job_it->status = result.status;
+        std::cout << "DEBUG: Updated job " << jobId << " status to " << static_cast<int>(result.status) << std::endl;
+        SPDLOG_INFO("Job {} completed with status {}", jobId, static_cast<int>(result.status));
+    }
+    else
+    {
+        std::cout << "DEBUG: WARNING - Completed job " << jobId << " not found in pendingJobs!" << std::endl;
+        SPDLOG_WARN("Completed job {} not found in pendingJobs", jobId);
+    }
 
     // If the job was unsuccessful, then mark all dependent jobs as canceled
     if (result.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR)
