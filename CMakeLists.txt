@@ -81,6 +81,25 @@ target_link_libraries(${PROJ_NAME}d
   protobuf
 )
 
+add_executable(${PROJ_NAME}ctl
+  src/client.cpp
+)
+
+target_include_directories(${PROJ_NAME}ctl
+  PRIVATE
+  ${Boost_INCLUDE_DIR}
+)
+target_link_libraries(${PROJ_NAME}ctl
+  Boost::program_options
+  aapis-cpp
+  grpc++
+  gpr
+  absl_log_internal_check_op
+  absl_log_internal_message
+  absl_log_internal_nullguard
+  protobuf
+)
+
 if (BUILD_TESTS)
     add_executable(test-jobqueue
         src/JobQueue.cpp
@@ -159,6 +178,15 @@ install(TARGETS ${PROJ_NAME}
 )
 
 install(TARGETS ${PROJ_NAME}d
+    EXPORT ${PROJ_NAME}Targets
+    LIBRARY DESTINATION lib COMPONENT Runtime
+    ARCHIVE DESTINATION lib COMPONENT Development
+    RUNTIME DESTINATION bin COMPONENT Runtime
+    PUBLIC_HEADER DESTINATION include COMPONENT Development
+    BUNDLE DESTINATION bin COMPONENT Runtime
+)
+
+install(TARGETS ${PROJ_NAME}ctl
     EXPORT ${PROJ_NAME}Targets
     LIBRARY DESTINATION lib COMPONENT Runtime
     ARCHIVE DESTINATION lib COMPONENT Development
