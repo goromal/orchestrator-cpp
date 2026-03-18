@@ -41,6 +41,7 @@ bool Store::submitJob(const Job& job)
     pid_t pid = fork();
     std::cout << "DEBUG: fork() returned pid=" << pid << " for job " << job.id << std::endl;
 
+    std::cout << "DEBUG: Checking fork result, pid=" << pid << std::endl;
     if (pid == -1)
     {
         // Fork failed
@@ -69,6 +70,7 @@ bool Store::submitJob(const Job& job)
 
     active_jobs[job.id] = worker;
 
+    std::cout << "DEBUG: Job " << job.id << " started with PID " << pid << " (timeout: " << worker.timeout_seconds << "s)" << std::endl;
     SPDLOG_INFO("Job {} started with PID {} (timeout: {}s)",
                 job.id, pid, worker.timeout_seconds);
 
