@@ -36,8 +36,10 @@ bool Store::submitJob(const Job& job)
     std::cout << "DEBUG: Submitting job " << job.id << " with script: " << substituted_script << std::endl;
     SPDLOG_DEBUG("Submitting job {} with script: {}", job.id, substituted_script);
 
+    std::cout << "DEBUG: About to fork() for job " << job.id << std::endl;
     // Fork subprocess
     pid_t pid = fork();
+    std::cout << "DEBUG: fork() returned pid=" << pid << " for job " << job.id << std::endl;
 
     if (pid == -1)
     {
