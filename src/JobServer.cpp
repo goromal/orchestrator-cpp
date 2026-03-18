@@ -21,6 +21,7 @@ size_t InitState::step(Store& s, Ports& p,
     [[maybe_unused]] Ports& ports = p;
 
     if (trigger.type == ::services::StepTrigger::Type::HEARTBEAT) {
+        std::cout << "DEBUG: JobServer InitState::step() called with HEARTBEAT" << std::endl;
         SPDLOG_INFO("JobServer initialized successfully");
         return RunningState::index();
     }
@@ -37,6 +38,7 @@ size_t RunningState::step(Store& s, Ports& p,
     (void)tag;
 
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION) {
+        std::cout << "DEBUG: JobServer RunningState logical action: " << trigger.action_name << std::endl;
 
         // ──────────────────────────────────────────────────────────────────
         // DefineJob RPC
