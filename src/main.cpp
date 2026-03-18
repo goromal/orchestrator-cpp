@@ -124,12 +124,16 @@ private:
         Response* response,
         const std::string& action_name,
         OutputPort& output_port,
-        std::chrono::milliseconds timeout = std::chrono::seconds(5))
+        std::chrono::milliseconds timeout = std::chrono::seconds(30))  // Increased for async reactor flow
     {
+        // Clear any stale cached value from previous request
+        output_port.clear_cache();
+
         // Schedule action with request data on reactor
         job_server_->scheduleLogicalActionWithData(action_name, request);
 
         // Poll output port for response with timeout
+        // Note: This may take multiple reactor heartbeats for JobServer→JobQueue→JobServer flow
         auto deadline = std::chrono::steady_clock::now() + timeout;
         while (std::chrono::steady_clock::now() < deadline)
         {
@@ -137,6 +141,7 @@ private:
             if (output_port.is_present())
             {
                 *response = output_port.get();
+                output_port.clear_cache();  // Clear after reading
                 return grpc::Status::OK;
             }
 
