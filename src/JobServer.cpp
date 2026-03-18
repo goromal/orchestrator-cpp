@@ -82,15 +82,16 @@ size_t RunningState::step(Store& s, Ports& p,
         else if (trigger.action_name == "kickoff_job_request") {
             if (p.kickoff_job_request_in.is_present()) {
                 auto request = p.kickoff_job_request_in.get();
-                aapis::orchestrator::v2::KickoffJobResponse response;
 
                 // Validate request
                 auto validation = s.validateKickoffJobRequest(request);
                 if (!validation.is_valid) {
+                    aapis::orchestrator::v2::KickoffJobResponse response;
                     response.set_success(false);
                     response.set_message(validation.error_message);
                     response.set_job_id(-1);
                     SPDLOG_WARN("KickoffJob validation failed: {}", validation.error_message);
+                    p.kickoff_job_response_out.set(response);
                 } else {
                     // Convert to internal Job structure
                     Job job = s.convertToJob(request);
@@ -98,16 +99,14 @@ size_t RunningState::step(Store& s, Ports& p,
                     // Send to JobQueue
                     p.new_job_out.set(job);
 
-                    // Wait for job ID assignment (handled in next heartbeat)
-                    // For now, return success with placeholder
-                    response.set_success(true);
-                    response.set_message("Job queued successfully");
-                    response.set_job_id(0);  // Will be assigned by JobQueue
-                    SPDLOG_INFO("Kicked off job type: {}", request.job_type());
+                    // Track pending request - response will be sent when new_job_id_in arrives
+                    s.pending_kickoff = true;
+                    s.pending_kickoff_request = request;
+                    SPDLOG_INFO("Kicked off job type: {} (awaiting job ID from JobQueue)", request.job_type());
+                    // NOTE: Response NOT sent here - will be sent when new_job_id_in is present
                 }
 
                 s.requests_handled++;
-                p.kickoff_job_response_out.set(response);
             }
         }
 
@@ -124,15 +123,13 @@ size_t RunningState::step(Store& s, Ports& p,
                 query.id = request.job_id();
                 p.query_out.set(query);
 
-                // Response will be handled when query_response_in is present
-                // For now, send a placeholder response
-                aapis::orchestrator::v2::JobStatusResponse response;
-                response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_UNSPECIFIED);
-                response.set_message("Query sent to JobQueue");
-                SPDLOG_INFO("Job status query for job_id: {}", request.job_id());
+                // Track pending request - response will be sent when query_response_in arrives
+                s.pending_query_type = Store::PendingQueryType::JOB_STATUS;
+                s.pending_job_status_id = request.job_id();
+                SPDLOG_INFO("Job status query for job_id: {} (awaiting JobQueue response)", request.job_id());
 
                 s.requests_handled++;
-                p.job_status_response_out.set(response);
+                // NOTE: Response NOT sent here - will be sent when query_response_in is present
             }
         }
 
@@ -148,16 +145,12 @@ size_t RunningState::step(Store& s, Ports& p,
                 query.type = job_queue::JobQuery::Type::GET_ALL_QUEUED;
                 p.query_out.set(query);
 
-                // Response will be aggregated from query response
-                // For now, send a placeholder response
-                aapis::orchestrator::v2::JobsSummaryStatusResponse response;
-                response.set_num_queued_jobs(0);
-                response.set_num_active_jobs(0);
-                response.set_num_completed_jobs(0);
-                SPDLOG_INFO("Jobs summary status query");
+                // Track pending request - response will be sent when query_response_in arrives
+                s.pending_query_type = Store::PendingQueryType::JOBS_SUMMARY;
+                SPDLOG_INFO("Jobs summary status query (awaiting JobQueue response)");
 
                 s.requests_handled++;
-                p.jobs_summary_response_out.set(response);
+                // NOTE: Response NOT sent here - will be sent when query_response_in is present
             }
         }
 
@@ -234,10 +227,117 @@ size_t RunningState::step(Store& s, Ports& p,
         // Handle responses from JobQueue
         // ──────────────────────────────────────────────────────────────────
 
-        // Note: The current implementation sends responses immediately.
-        // A more sophisticated implementation would track pending requests
-        // and match them with JobQueue responses.
+    }
 
+    // Handle job ID assignment from JobQueue (arrival via port)
+    if (p.new_job_id_in.is_present()) {
+        auto job_id = p.new_job_id_in.get();
+        SPDLOG_INFO("Received job ID from JobQueue: {}", job_id);
+
+        if (s.pending_kickoff) {
+            aapis::orchestrator::v2::KickoffJobResponse response;
+            response.set_success(true);
+            response.set_message("Job queued successfully");
+            response.set_job_id(job_id);
+            SPDLOG_INFO("KickoffJob response: job_id={}", job_id);
+
+            p.kickoff_job_response_out.set(response);
+            s.pending_kickoff = false;
+        } else {
+            SPDLOG_WARN("Received unexpected job ID {} with no pending kickoff", job_id);
+        }
+    }
+
+    // Handle query responses from JobQueue (arrival via port)
+    if (p.query_response_in.is_present()) {
+        auto query_response = p.query_response_in.get();
+        SPDLOG_INFO("Received query response from JobQueue (success={}, {} jobs)",
+                   query_response.success, query_response.jobs.size());
+
+        // Match pending request and send appropriate RPC response
+        if (s.pending_query_type == Store::PendingQueryType::JOB_STATUS) {
+            // Handle JobStatus query response
+            aapis::orchestrator::v2::JobStatusResponse response;
+
+            if (query_response.success && !query_response.jobs.empty()) {
+                const Job& job = query_response.jobs[0];
+
+                // Convert v1::JobStatus to v2::JobStatus
+                switch (job.status) {
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_QUEUED);
+                        break;
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_ACTIVE);
+                        break;
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_COMPLETE);
+                        break;
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_ERROR);
+                        break;
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_CANCELED);
+                        break;
+                    default:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_UNSPECIFIED);
+                        break;
+                }
+
+                response.set_message("Job found");
+                SPDLOG_INFO("JobStatus response: job_id={} status={}", s.pending_job_status_id, job.status);
+            } else {
+                response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_UNSPECIFIED);
+                response.set_message(query_response.error_message.empty()
+                                    ? "Job not found"
+                                    : query_response.error_message);
+                SPDLOG_WARN("JobStatus query failed: {}", response.message());
+            }
+
+            p.job_status_response_out.set(response);
+            s.pending_query_type = Store::PendingQueryType::NONE;
+        }
+        else if (s.pending_query_type == Store::PendingQueryType::JOBS_SUMMARY) {
+            // Handle JobsSummary query response
+            aapis::orchestrator::v2::JobsSummaryStatusResponse response;
+
+            if (query_response.success) {
+                // Count jobs by status
+                int num_queued = 0;
+                int num_active = 0;
+                int num_completed = 0;
+
+                for (const auto& job : query_response.jobs) {
+                    switch (job.status) {
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED:
+                            num_queued++;
+                            break;
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE:
+                            num_active++;
+                            break;
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE:
+                            num_completed++;
+                            break;
+                        default:
+                            break;
+                    }
+                }
+
+                response.set_num_queued_jobs(num_queued);
+                response.set_num_active_jobs(num_active);
+                response.set_num_completed_jobs(num_completed);
+                SPDLOG_INFO("JobsSummary response: queued={} active={} completed={}",
+                           num_queued, num_active, num_completed);
+            } else {
+                response.set_num_queued_jobs(0);
+                response.set_num_active_jobs(0);
+                response.set_num_completed_jobs(0);
+                SPDLOG_WARN("JobsSummary query failed: {}", query_response.error_message);
+            }
+
+            p.jobs_summary_response_out.set(response);
+            s.pending_query_type = Store::PendingQueryType::NONE;
+        }
     }
 
     return RunningState::index();

@@ -138,6 +138,22 @@ struct Store {
     // Request counter for debugging
     uint64_t requests_handled{0};
 
+    // Pending query tracking for async request-response pattern
+    // When a JobStatus or JobsSummary request comes in, we send a query to JobQueue
+    // and store the request context here. When query_response_in arrives, we match
+    // it and send the actual response.
+    enum class PendingQueryType {
+        NONE,
+        JOB_STATUS,
+        JOBS_SUMMARY
+    };
+    PendingQueryType pending_query_type{PendingQueryType::NONE};
+    int64_t pending_job_status_id{-1};  // For JOB_STATUS queries
+
+    // Pending KickoffJob tracking - awaiting job ID assignment from JobQueue
+    bool pending_kickoff{false};
+    aapis::orchestrator::v2::KickoffJobRequest pending_kickoff_request;
+
     // ──────────────────────────────────────────────────────────────────
     // Pure Functions: Job Definition Management
     // ──────────────────────────────────────────────────────────────────
