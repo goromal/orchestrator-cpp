@@ -555,6 +555,52 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
         }
     }
 
+    // Handle heartbeat: dispatch ready jobs to executor
+    if (trigger.type == ::services::StepTrigger::Type::HEARTBEAT)
+    {
+        // Check for jobs that are ready to execute (no blockers)
+        for (auto& job : s.jobQueue)
+        {
+            if (job.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED &&
+                s.activeJobIds.find(job.id) == s.activeJobIds.end())
+            {
+                // Check if all blockers are complete
+                bool ready = true;
+                for (int64_t blocker_id : job.independentBlockers)
+                {
+                    auto blocker_it = std::find_if(s.jobQueue.begin(), s.jobQueue.end(),
+                                                   [blocker_id](const Job& j) { return j.id == blocker_id; });
+                    if (blocker_it != s.jobQueue.end() &&
+                        blocker_it->status != aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE)
+                    {
+                        ready = false;
+                        break;
+                    }
+                }
+                for (int64_t blocker_id : job.relevantBlockers)
+                {
+                    auto blocker_it = std::find_if(s.jobQueue.begin(), s.jobQueue.end(),
+                                                   [blocker_id](const Job& j) { return j.id == blocker_id; });
+                    if (blocker_it != s.jobQueue.end() &&
+                        blocker_it->status != aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE)
+                    {
+                        ready = false;
+                        break;
+                    }
+                }
+
+                if (ready)
+                {
+                    SPDLOG_INFO("JobQueue dispatching job {} to executor (heartbeat)", job.id);
+                    std::cout << "DEBUG: JobQueue dispatching job " << job.id << " to executor" << std::endl;
+                    p.execute_job_out.set(job);
+                    job.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
+                    s.activeJobIds[job.id] = true;
+                }
+            }
+        }
+    }
+
     return RunningState::index();
 }
 
