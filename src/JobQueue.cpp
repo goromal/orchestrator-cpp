@@ -405,6 +405,13 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
 {
     (void)c;
     (void)tag;
+
+    // DEBUG: Log all triggers
+    if (trigger.type == ::services::StepTrigger::Type::HEARTBEAT)
+    {
+        std::cout << "DEBUG: JobQueue RunningState HEARTBEAT" << std::endl;
+    }
+
     // Handle all logical actions based on StepTrigger
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
     {
