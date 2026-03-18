@@ -17,17 +17,23 @@ namespace job_executor
 
 bool Store::submitJob(const Job& job)
 {
+    std::cout << "DEBUG: Store::submitJob called for job " << job.id << std::endl;
+
     // Check thread availability
     if (!hasAvailableThread())
     {
+        std::cout << "DEBUG: No threads available for job " << job.id << std::endl;
         SPDLOG_ERROR("Cannot submit job {}: no threads available ({}/{})",
                      job.id, active_jobs.size(), max_threads);
         return false;
     }
 
+    std::cout << "DEBUG: Thread available, substituting variables for job " << job.id << std::endl;
+
     // Perform bash variable substitution
     std::string substituted_script = substituteVariables(job.script, job);
 
+    std::cout << "DEBUG: Submitting job " << job.id << " with script: " << substituted_script << std::endl;
     SPDLOG_DEBUG("Submitting job {} with script: {}", job.id, substituted_script);
 
     // Fork subprocess
@@ -263,10 +269,11 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
         // Connection name is "queue_to_executor_job" so action is "on_port_queue_to_executor_job"
         if (trigger.action_name == "on_port_queue_to_executor_job")
         {
-            std::cout << "DEBUG: JobExecutor received job from JobQueue" << std::endl;
+            std::cout << "DEBUG: JobExecutor received job from JobQueue, job_in.is_present=" << p.job_in.is_present() << std::endl;
             if (p.job_in.is_present())
             {
                 const Job& job = p.job_in.get();
+                std::cout << "DEBUG: JobExecutor submitting job " << job.id << std::endl;
 
                 // Try to submit job (Store handles thread availability check)
                 bool submitted = s.submitJob(job);
