@@ -443,7 +443,7 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
                 }
             }
         }
-        else if (trigger.action_name == "on_job_result_in")
+        else if (trigger.action_name == "on_port_job_result")
         {
             // Handle job completion result
             if (!p.job_result_in.is_present())
@@ -472,7 +472,7 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
                 }
             }
         }
-        else if (trigger.action_name == "on_query_request_in")
+        else if (trigger.action_name == "on_port_query")
         {
             // Handle query request
             if (!p.query_request_in.is_present())
@@ -491,7 +491,7 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
             response.jobs = jobs;
             p.query_response_out.set(response);
         }
-        else if (trigger.action_name == "on_control_request_in")
+        else if (trigger.action_name == "on_port_control")
         {
             // Handle control command
             if (!p.control_request_in.is_present())
@@ -584,7 +584,7 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
 
             // Don't execute jobs in paused state
         }
-        else if (trigger.action_name == "on_job_result_in")
+        else if (trigger.action_name == "on_port_job_result")
         {
             // Handle job completion result
             if (!p.job_result_in.is_present())
@@ -602,7 +602,7 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
 
             // Don't try to execute jobs in paused state
         }
-        else if (trigger.action_name == "on_query_request_in")
+        else if (trigger.action_name == "on_port_query")
         {
             // Handle query request
             if (!p.query_request_in.is_present())
@@ -621,7 +621,7 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
             response.jobs = jobs;
             p.query_response_out.set(response);
         }
-        else if (trigger.action_name == "on_control_request_in")
+        else if (trigger.action_name == "on_port_control")
         {
             // Handle control command
             if (!p.control_request_in.is_present())
