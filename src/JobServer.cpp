@@ -245,6 +245,49 @@ JobServer::JobServer(const ::services::MicroServiceContainer<>& container)
 {
 }
 
+void JobServer::processActionData(const std::string& action_name, const std::any& action_data)
+{
+    // Transfer action data to appropriate input ports
+    // This fixes the missing data flow in mscpp's IOAdapter implementation
+
+    try {
+        if (action_name == "define_job_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::DefineJobRequest>(action_data);
+            getPorts().define_job_request_in.set(request);
+        }
+        else if (action_name == "kickoff_job_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::KickoffJobRequest>(action_data);
+            getPorts().kickoff_job_request_in.set(request);
+        }
+        else if (action_name == "job_status_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::JobStatusRequest>(action_data);
+            getPorts().job_status_request_in.set(request);
+        }
+        else if (action_name == "jobs_summary_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::JobsSummaryStatusRequest>(action_data);
+            getPorts().jobs_summary_request_in.set(request);
+        }
+        else if (action_name == "pause_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::PauseJobsRequest>(action_data);
+            getPorts().pause_request_in.set(request);
+        }
+        else if (action_name == "resume_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::ResumeJobsRequest>(action_data);
+            getPorts().resume_request_in.set(request);
+        }
+        else if (action_name == "cancel_request") {
+            auto request = std::any_cast<aapis::orchestrator::v2::CancelJobRequest>(action_data);
+            getPorts().cancel_request_in.set(request);
+        }
+        else {
+            SPDLOG_WARN("Unknown action name in processActionData: {}", action_name);
+        }
+    }
+    catch (const std::bad_any_cast& e) {
+        SPDLOG_ERROR("Failed to cast action data for action '{}': {}", action_name, e.what());
+    }
+}
+
 } // namespace job_server
 
 } // namespace orchestrator

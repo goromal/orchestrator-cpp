@@ -33,9 +33,8 @@ void signalHandler(int signum)
 class OrchestratorServiceImpl : public aapis::orchestrator::v2::OrchestratorService::Service
 {
 public:
-    explicit OrchestratorServiceImpl(
-        ::services::GrpcAdapter<orchestrator::job_server::JobServer, OrchestratorServiceImpl>* adapter)
-        : adapter_(adapter)
+    explicit OrchestratorServiceImpl(std::shared_ptr<orchestrator::job_server::JobServer> job_server)
+        : job_server_(job_server)
     {
     }
 
@@ -44,8 +43,8 @@ public:
                           aapis::orchestrator::v2::DefineJobResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "define_job_request", "define_job_response_out");
+        return handleRpc(*request, response, "define_job_request",
+                        job_server_->getPorts().define_job_response_out);
     }
 
     grpc::Status KickoffJob(grpc::ServerContext* context,
@@ -53,8 +52,8 @@ public:
                            aapis::orchestrator::v2::KickoffJobResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "kickoff_job_request", "kickoff_job_response_out");
+        return handleRpc(*request, response, "kickoff_job_request",
+                        job_server_->getPorts().kickoff_job_response_out);
     }
 
     grpc::Status JobStatus(grpc::ServerContext* context,
@@ -62,8 +61,8 @@ public:
                           aapis::orchestrator::v2::JobStatusResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "job_status_request", "job_status_response_out");
+        return handleRpc(*request, response, "job_status_request",
+                        job_server_->getPorts().job_status_response_out);
     }
 
     grpc::Status JobsSummaryStatus(grpc::ServerContext* context,
@@ -71,8 +70,8 @@ public:
                                    aapis::orchestrator::v2::JobsSummaryStatusResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "jobs_summary_request", "jobs_summary_response_out");
+        return handleRpc(*request, response, "jobs_summary_request",
+                        job_server_->getPorts().jobs_summary_response_out);
     }
 
     grpc::Status PauseJobs(grpc::ServerContext* context,
@@ -80,8 +79,8 @@ public:
                           aapis::orchestrator::v2::PauseJobsResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "pause_request", "pause_response_out");
+        return handleRpc(*request, response, "pause_request",
+                        job_server_->getPorts().pause_response_out);
     }
 
     grpc::Status ResumeJobs(grpc::ServerContext* context,
@@ -89,8 +88,8 @@ public:
                            aapis::orchestrator::v2::ResumeJobsResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "resume_request", "resume_response_out");
+        return handleRpc(*request, response, "resume_request",
+                        job_server_->getPorts().resume_response_out);
     }
 
     grpc::Status CancelJob(grpc::ServerContext* context,
@@ -98,12 +97,59 @@ public:
                           aapis::orchestrator::v2::CancelJobResponse* response) override
     {
         (void)context;
-        return adapter_->handleRpc(*request, response,
-                                  "cancel_request", "cancel_response_out");
+        return handleRpc(*request, response, "cancel_request",
+                        job_server_->getPorts().cancel_response_out);
     }
 
 private:
-    ::services::GrpcAdapter<orchestrator::job_server::JobServer, OrchestratorServiceImpl>* adapter_;
+    /**
+     * Handle RPC with request-response polling pattern.
+     *
+     * This implementation directly polls the JobServer output port instead of
+     * using the incomplete IOAdapter::waitForReactorResponse() mechanism.
+     *
+     * @tparam Request Request message type
+     * @tparam Response Response message type
+     * @tparam OutputPort Output port type
+     * @param request The RPC request
+     * @param response Pointer to response (will be filled)
+     * @param action_name Logical action name to schedule
+     * @param output_port Reference to reactor output port for response
+     * @param timeout Maximum time to wait for response
+     * @return gRPC status
+     */
+    template<typename Request, typename Response, typename OutputPort>
+    grpc::Status handleRpc(
+        const Request& request,
+        Response* response,
+        const std::string& action_name,
+        OutputPort& output_port,
+        std::chrono::milliseconds timeout = std::chrono::seconds(5))
+    {
+        // Schedule action with request data on reactor
+        job_server_->scheduleLogicalActionWithData(action_name, request);
+
+        // Poll output port for response with timeout
+        auto deadline = std::chrono::steady_clock::now() + timeout;
+        while (std::chrono::steady_clock::now() < deadline)
+        {
+            // Check if output port has data
+            if (output_port.is_present())
+            {
+                *response = output_port.get();
+                return grpc::Status::OK;
+            }
+
+            // Sleep briefly to avoid busy-wait
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        // Timeout
+        return grpc::Status(grpc::StatusCode::DEADLINE_EXCEEDED,
+                           "Reactor response timeout for action: " + action_name);
+    }
+
+    std::shared_ptr<orchestrator::job_server::JobServer> job_server_;
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -299,16 +345,29 @@ int main(int argc, char* argv[])
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // ──────────────────────────────────────────────────────────────────────────
-    // Create gRPC Adapter for JobServer
+    // Create gRPC Server for JobServer
     // ──────────────────────────────────────────────────────────────────────────
 
     std::string grpc_address = "0.0.0.0:" + std::to_string(grpc_port);
-    ::services::GrpcAdapter<orchestrator::job_server::JobServer, OrchestratorServiceImpl>
-        grpc_adapter(job_server, grpc_address);
+    OrchestratorServiceImpl service_impl(job_server);
+
+    grpc::ServerBuilder server_builder;
+    server_builder.AddListeningPort(grpc_address, grpc::InsecureServerCredentials());
+    server_builder.RegisterService(&service_impl);
+
+    std::unique_ptr<grpc::Server> grpc_server = server_builder.BuildAndStart();
+    if (!grpc_server)
+    {
+        std::cerr << "ERROR: Failed to start gRPC server on " << grpc_address << std::endl;
+        scheduler->stop();
+        if (scheduler_thread.joinable())
+        {
+            scheduler_thread.join();
+        }
+        return 1;
+    }
 
     std::cout << "Starting gRPC server on " + grpc_address << "..." << std::endl;
-    grpc_adapter.start();
-
     std::cout << "Orchestrator service is running. Press Ctrl+C to shutdown." << std::endl;
 
     // ──────────────────────────────────────────────────────────────────────────
@@ -326,9 +385,9 @@ int main(int argc, char* argv[])
 
     std::cout << "Shutting down orchestrator service..." << std::endl;
 
-    // Stop gRPC adapter first (stops accepting new requests)
+    // Stop gRPC server first (stops accepting new requests)
     std::cout << "  Stopping gRPC server..." << std::endl;
-    grpc_adapter.stop();
+    grpc_server->Shutdown();
 
     // Stop reactor scheduler (stops all reactors)
     std::cout << "  Stopping reactor scheduler..." << std::endl;

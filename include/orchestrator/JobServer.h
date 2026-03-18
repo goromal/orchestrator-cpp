@@ -327,6 +327,19 @@ public:
      * @param container Reactor container for dependency management
      */
     explicit JobServer(const ::services::MicroServiceContainer<>& container);
+
+protected:
+    /**
+     * Override processActionData to transfer request data to input ports.
+     *
+     * This is called by processPendingActions() before executeLogicalAction().
+     * We use std::any_cast to extract the typed request and write it to the
+     * corresponding input port.
+     *
+     * @param action_name Name of the action (e.g., "define_job_request")
+     * @param action_data Type-erased request data
+     */
+    void processActionData(const std::string& action_name, const std::any& action_data) override;
 };
 
 } // namespace job_server
