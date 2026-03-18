@@ -82,6 +82,7 @@ size_t RunningState::step(Store& s, Ports& p,
         // KickoffJob RPC
         // ──────────────────────────────────────────────────────────────────
         else if (trigger.action_name == "kickoff_job_request") {
+            std::cout << "DEBUG: KickoffJob handler, port is_present=" << p.kickoff_job_request_in.is_present() << std::endl;
             if (p.kickoff_job_request_in.is_present()) {
                 auto request = p.kickoff_job_request_in.get();
 
@@ -359,6 +360,7 @@ void JobServer::processActionData(const std::string& action_name, const std::any
     // Transfer action data to appropriate input ports
     // This fixes the missing data flow in mscpp's IOAdapter implementation
 
+    std::cout << "DEBUG: JobServer::processActionData called for action: " << action_name << std::endl;
     SPDLOG_INFO("JobServer::processActionData called for action: {}", action_name);
 
     try {
@@ -370,6 +372,7 @@ void JobServer::processActionData(const std::string& action_name, const std::any
         else if (action_name == "kickoff_job_request") {
             auto request = std::any_cast<aapis::orchestrator::v2::KickoffJobRequest>(action_data);
             getPorts().kickoff_job_request_in.set(request);
+            std::cout << "DEBUG: Set kickoff_job_request_in port, is_present=" << getPorts().kickoff_job_request_in.is_present() << std::endl;
         }
         else if (action_name == "job_status_request") {
             auto request = std::any_cast<aapis::orchestrator::v2::JobStatusRequest>(action_data);
