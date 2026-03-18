@@ -408,13 +408,16 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
     // Handle all logical actions based on StepTrigger
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
     {
+        std::cout << "DEBUG: JobQueue ReadyState logical action: " << trigger.action_name << std::endl;
         if (trigger.action_name == "on_new_job_in")
         {
+            std::cout << "DEBUG: JobQueue handling on_new_job_in, port is_present=" << p.new_job_in.is_present() << std::endl;
             // Handle new job submission
             if (!p.new_job_in.is_present())
                 return RunningState::index();
 
             auto job = p.new_job_in.get();
+            std::cout << "DEBUG: JobQueue received new job with priority " << job.priority << std::endl;
 
             SPDLOG_INFO("JobQueue received new job with priority {}", job.priority);
 
