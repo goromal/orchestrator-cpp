@@ -408,7 +408,7 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
     // Handle all logical actions based on StepTrigger
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
     {
-        if (trigger.action_name == "on_port_new_job")
+        if (trigger.action_name == "on_new_job_in")
         {
             // Handle new job submission
             if (!p.new_job_in.is_present())
@@ -564,7 +564,7 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
     // Handle all logical actions based on StepTrigger
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
     {
-        if (trigger.action_name == "on_port_new_job")
+        if (trigger.action_name == "on_new_job_in")
         {
             // Handle new job submission (paused)
             if (!p.new_job_in.is_present())
