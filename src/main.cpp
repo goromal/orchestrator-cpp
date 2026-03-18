@@ -5,6 +5,9 @@
 #include <csignal>
 #include <atomic>
 
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+
 #include <mscpp/ReactorScheduler.h>
 #include <mscpp/Topology.h>
 #include <mscpp/IOAdapter.h>
@@ -206,10 +209,22 @@ int main(int argc, char* argv[])
         db_path = vm["db-path"].as<std::string>();
     }
 
+    // ──────────────────────────────────────────────────────────────────────────
+    // Initialize spdlog for debugging
+    // ──────────────────────────────────────────────────────────────────────────
+
+    auto console_sink = std::make_shared<spdlog::sinks::stdout_color_sink_mt>();
+    auto logger = std::make_shared<spdlog::logger>("orchestrator", console_sink);
+    logger->set_level(spdlog::level::info);
+    logger->set_pattern("[%H:%M:%S.%e] [%^%l%$] [%s:%#] %v");
+    spdlog::set_default_logger(logger);
+
     std::cout << "Orchestrator Service Configuration:" << std::endl;
     std::cout << "  gRPC Port: " << grpc_port << std::endl;
     std::cout << "  Executor Threads: " << num_threads << std::endl;
     std::cout << "  Database Path: " << db_path << std::endl;
+
+    SPDLOG_INFO("Spdlog initialized - debug logging enabled");
 
     // ──────────────────────────────────────────────────────────────────────────
     // Setup Signal Handling
