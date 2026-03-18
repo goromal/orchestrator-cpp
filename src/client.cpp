@@ -348,76 +348,63 @@ int main(int argc, char* argv[])
 {
     uint32_t grpc_port = 50051;
     std::string command;
+    std::vector<std::string> remaining_args;
 
-    namespace po = boost::program_options;
-    po::options_description global_desc("Global options");
-    global_desc.add_options()
-        ("help,h", "Print usage")
-        ("grpc-port,p", po::value<uint32_t>(&grpc_port)->default_value(50051),
-         "gRPC port to connect to")
-        ("command", po::value<std::string>(&command), "Command to execute");
-
-    po::positional_options_description pos;
-    pos.add("command", 1);
-
-    po::variables_map vm;
-
-    try
+    // Simple manual argument parsing
+    for (int i = 1; i < argc; ++i)
     {
-        po::parsed_options parsed = po::command_line_parser(argc, argv)
-            .options(global_desc)
-            .positional(pos)
-            .allow_unregistered()
-            .run();
+        std::string arg = argv[i];
 
-        po::store(parsed, vm);
-        po::notify(vm);
+        if (arg == "-h" || arg == "--help")
+        {
+            std::cout << "Usage: orchestratorctl [options] <command> [command-args...]" << std::endl;
+            std::cout << std::endl;
+            std::cout << "Options:" << std::endl;
+            std::cout << "  -h, --help           Print usage" << std::endl;
+            std::cout << "  -p, --grpc-port <n>  gRPC port to connect to (default: 50051)" << std::endl;
+            std::cout << std::endl;
+            std::cout << "Commands:" << std::endl;
+            std::cout << "  define <job-type> <job-definition>" << std::endl;
+            std::cout << "  kickoff <job-type> [--priority <n>] [--blocker <id>]... [--input <arg>]..." << std::endl;
+            std::cout << "  status <job-id>" << std::endl;
+            std::cout << "  summary" << std::endl;
+            std::cout << "  pause" << std::endl;
+            std::cout << "  resume" << std::endl;
+            std::cout << "  cancel <job-id>" << std::endl;
+            return 0;
+        }
+        else if (arg == "-p" || arg == "--grpc-port")
+        {
+            if (i + 1 < argc)
+            {
+                grpc_port = std::stoul(argv[++i]);
+            }
+            else
+            {
+                std::cerr << "Error: " << arg << " requires an argument" << std::endl;
+                return 1;
+            }
+        }
+        else if (command.empty())
+        {
+            command = arg;
+        }
+        else
+        {
+            remaining_args.push_back(arg);
+        }
     }
-    catch (const po::error& e)
+
+    if (command.empty())
     {
-        std::cerr << "Error parsing arguments: " << e.what() << std::endl;
+        std::cerr << "Error: No command specified" << std::endl;
+        std::cerr << "Run 'orchestratorctl --help' for usage information" << std::endl;
         return 1;
-    }
-
-    if (vm.count("help") || !vm.count("command"))
-    {
-        std::cout << "Usage: orchestratorctl [options] <command> [command-args...]" << std::endl;
-        std::cout << std::endl;
-        std::cout << global_desc << std::endl;
-        std::cout << "Commands:" << std::endl;
-        std::cout << "  define <job-type> <job-definition>" << std::endl;
-        std::cout << "  kickoff <job-type> [--priority <n>] [--blocker <id>]... [--input <arg>]..." << std::endl;
-        std::cout << "  status <job-id>" << std::endl;
-        std::cout << "  summary" << std::endl;
-        std::cout << "  pause" << std::endl;
-        std::cout << "  resume" << std::endl;
-        std::cout << "  cancel <job-id>" << std::endl;
-        return vm.count("help") ? 0 : 1;
     }
 
     std::string target = "localhost:" + std::to_string(grpc_port);
     auto channel = grpc::CreateChannel(target, grpc::InsecureChannelCredentials());
     OrchestratorClient client(channel);
-
-    std::vector<std::string> remaining_args;
-    for (int i = 1; i < argc; ++i)
-    {
-        std::string arg = argv[i];
-        if (arg == "-p" || arg == "--grpc-port")
-        {
-            ++i; // Skip the port value
-            continue;
-        }
-        if (arg == command)
-        {
-            // Collect all remaining args after command
-            for (int j = i + 1; j < argc; ++j)
-            {
-                remaining_args.push_back(argv[j]);
-            }
-            break;
-        }
-    }
 
     if (command == "define")
     {
