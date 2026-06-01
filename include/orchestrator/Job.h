@@ -15,6 +15,8 @@ struct Job
     int64_t id{-1};
     // int64_t parentId{-1}; TODO shouldn't be necessary
 
+    std::string job_type;  // Job type identifier (for queries/filtering)
+
     aapis::orchestrator::v1::JobStatus status;
     aapis::orchestrator::v1::JobStatus prePauseStatus{aapis::orchestrator::v1::JobStatus::JOB_STATUS_INVALID};
 
@@ -36,6 +38,28 @@ struct Job
 
     // Populated using client-specified inputs as well as relevantBlockers' outputs obtained via database query
     std::vector<std::string> inputs;
+
+    // ──────────────────────────────────────────────────────────────────────────
+    // Executor-Specific Fields (populated by JobServer/JobDatabase in Stage 5/6)
+    // ──────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Bash script template for job execution
+     *
+     * Supports variable substitution:
+     * - $INPUT_IDS[] - Array of blocker job IDs
+     * - $INPUT_ARGS[] - Array of input strings
+     *
+     * TODO: Populated from job type definition in JobDatabase (Stage 5)
+     */
+    std::string script;
+
+    /**
+     * Maximum execution time in seconds (0 = no timeout)
+     *
+     * TODO: Populated from job type definition in JobDatabase (Stage 5)
+     */
+    int64_t timeoutSeconds{0};
 };
 
 } // end namespace orchestrator

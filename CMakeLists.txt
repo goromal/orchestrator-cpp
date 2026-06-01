@@ -9,6 +9,7 @@ endif()
 
 option(BUILD_TESTS "Build Tests" ON)
 option(SECONDARY_SANITIZERS "Run Secondary Sanitizers" OFF)
+option(USE_LOCAL_MSCPP "Use local mscpp from ../mscpp instead of system package" OFF)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -32,50 +33,133 @@ if(CMAKE_BUILD_TYPE STREQUAL "Debug")
   endif()
 endif()
 
-find_package(mscpp REQUIRED)
-find_package(Boost COMPONENTS program_options REQUIRED)
+find_package(spdlog REQUIRED)
+find_package(Catch2 REQUIRED)
+find_package(SQLite3 REQUIRED)
+find_package(Protobuf REQUIRED)
+find_package(Boost REQUIRED COMPONENTS program_options)
+
+if(USE_LOCAL_MSCPP)
+  add_subdirectory(../mscpp ${CMAKE_BINARY_DIR}/mscpp)
+else()
+  find_package(mscpp REQUIRED)
+endif()
+
+set(LIB_DEPS mscpp protobuf SQLite::SQLite3)
+set(LIB_INCS $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
 
 add_library(${PROJ_NAME}
   src/JobQueue.cpp
+  src/JobExecutor.cpp
+  src/JobDatabase.cpp
+  src/JobServer.cpp
 )
-target_include_directories(${PROJ_NAME}
-  PUBLIC
-  $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
-  $<INSTALL_INTERFACE:include>
+target_include_directories(${PROJ_NAME} PUBLIC ${LIB_INCS})
+target_link_libraries(${PROJ_NAME} PUBLIC ${LIB_DEPS})
+target_compile_definitions(${PROJ_NAME} INTERFACE
+    $<$<CONFIG:Debug>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_TRACE>
+    $<$<CONFIG:RelWithDebInfo>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO>
+    $<$<CONFIG:Release>:SPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_WARN>
 )
-target_link_libraries(${PROJ_NAME} PUBLIC mscpp protobuf)
 
 add_executable(${PROJ_NAME}d
   src/main.cpp
 )
+
 target_include_directories(${PROJ_NAME}d
   PRIVATE
   ${Boost_INCLUDE_DIR}
 )
 target_link_libraries(${PROJ_NAME}d
   ${PROJ_NAME}
-  ${Boost_LIBRARIES}
+  Boost::program_options
+  aapis-cpp
+  grpc++
+  gpr
+  absl_log_internal_check_op
+  absl_log_internal_message
+  absl_log_internal_nullguard
+  protobuf
+)
+
+add_executable(${PROJ_NAME}ctl
+  src/client.cpp
+)
+
+target_include_directories(${PROJ_NAME}ctl
+  PRIVATE
+  ${Boost_INCLUDE_DIR}
+)
+target_link_libraries(${PROJ_NAME}ctl
+  Boost::program_options
+  aapis-cpp
+  grpc++
+  gpr
+  absl_log_internal_check_op
+  absl_log_internal_message
+  absl_log_internal_nullguard
+  protobuf
 )
 
 if (BUILD_TESTS)
-    set(UNIT_TEST unit-tests)
-    add_executable(${UNIT_TEST}
-        tests/MainTest.cpp
+    add_executable(test-jobqueue
+        src/JobQueue.cpp
+        # Mocks removed - will be re-added in Stage 4 and 5
+        # src/mocks/JobExecutorMock.cpp
+        # src/mocks/JobDatabaseMock.cpp
         tests/JobQueueTest.cpp
     )
-    target_link_libraries(${UNIT_TEST}
-        ${PROJ_NAME}
-        boost_unit_test_framework
-    )
-    add_test(NAME ${UNIT_TEST} COMMAND ${UNIT_TEST})
+    target_include_directories(test-jobqueue PUBLIC ${LIB_INCS})
+    target_link_libraries(test-jobqueue Catch2::Catch2 ${Boost_LIBRARIES} ${LIB_DEPS})
+    add_test(NAME test-jobqueue COMMAND test-jobqueue)
 
     add_custom_command(
-        TARGET ${UNIT_TEST}
-        COMMENT "Run unit tests"
+        TARGET test-jobqueue
+        COMMENT "Run JobQueue unit tests"
         POST_BUILD
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-        COMMAND ${UNIT_TEST}
+        COMMAND test-jobqueue
     )
+
+    add_executable(test-jobexecutor
+        src/JobExecutor.cpp
+        src/JobQueue.cpp
+        tests/JobExecutorTest.cpp
+    )
+    target_include_directories(test-jobexecutor PUBLIC ${LIB_INCS})
+    target_link_libraries(test-jobexecutor Catch2::Catch2 ${Boost_LIBRARIES} ${LIB_DEPS})
+    add_test(NAME test-jobexecutor COMMAND test-jobexecutor)
+
+    add_custom_command(
+        TARGET test-jobexecutor
+        COMMENT "Run JobExecutor unit tests"
+        POST_BUILD
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMAND test-jobexecutor
+    )
+
+    add_executable(test-jobdatabase
+        src/JobDatabase.cpp
+        src/JobQueue.cpp
+        tests/JobDatabaseTest.cpp
+    )
+    target_include_directories(test-jobdatabase PUBLIC ${LIB_INCS})
+    target_link_libraries(test-jobdatabase Catch2::Catch2 ${Boost_LIBRARIES} ${LIB_DEPS})
+    add_test(NAME test-jobdatabase COMMAND test-jobdatabase)
+
+    add_custom_command(
+        TARGET test-jobdatabase
+        COMMENT "Run JobDatabase unit tests"
+        POST_BUILD
+        WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        COMMAND test-jobdatabase
+    )
+
+    include(CTest)
+    include(Catch)
+    catch_discover_tests(test-jobqueue)
+    catch_discover_tests(test-jobexecutor)
+    catch_discover_tests(test-jobdatabase)
 endif()
 
 include(CMakePackageConfigHelpers)
@@ -95,6 +179,15 @@ install(TARGETS ${PROJ_NAME}
 )
 
 install(TARGETS ${PROJ_NAME}d
+    EXPORT ${PROJ_NAME}Targets
+    LIBRARY DESTINATION lib COMPONENT Runtime
+    ARCHIVE DESTINATION lib COMPONENT Development
+    RUNTIME DESTINATION bin COMPONENT Runtime
+    PUBLIC_HEADER DESTINATION include COMPONENT Development
+    BUNDLE DESTINATION bin COMPONENT Runtime
+)
+
+install(TARGETS ${PROJ_NAME}ctl
     EXPORT ${PROJ_NAME}Targets
     LIBRARY DESTINATION lib COMPONENT Runtime
     ARCHIVE DESTINATION lib COMPONENT Development

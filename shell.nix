@@ -1,7 +1,6 @@
 let
-  pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/refs/heads/dev/bump.tar.gz"))
-    { };
+  # Use local anixpkgs for development
+  pkgs = import ../anixpkgs { };
 in with pkgs;
 mkShell {
   nativeBuildInputs = [ cpp-helper cmake ];
@@ -10,8 +9,8 @@ mkShell {
     mscpp
     aapis-cpp
     protobuf
+    spdlog
+    catch2
+    sqlite
   ];
-  shellHook = ''
-    cpp-helper vscode
-  '';
 }
