@@ -25,6 +25,12 @@ using aapis::orchestrator::v2::ResumeJobsRequest;
 using aapis::orchestrator::v2::ResumeJobsResponse;
 using aapis::orchestrator::v2::CancelJobRequest;
 using aapis::orchestrator::v2::CancelJobResponse;
+using aapis::orchestrator::v2::ListJobDefinitionsRequest;
+using aapis::orchestrator::v2::ListJobDefinitionsResponse;
+using aapis::orchestrator::v2::DeleteJobDefinitionRequest;
+using aapis::orchestrator::v2::DeleteJobDefinitionResponse;
+using aapis::orchestrator::v2::QueryJobsRequest;
+using aapis::orchestrator::v2::QueryJobsResponse;
 using aapis::orchestrator::v2::JobStatus;
 
 class OrchestratorClient
@@ -324,6 +330,125 @@ public:
         }
     }
 
+    bool ListJobDefinitions()
+    {
+        ListJobDefinitionsRequest request;
+        ListJobDefinitionsResponse response;
+        ClientContext context;
+
+        Status status = stub_->ListJobDefinitions(&context, request, &response);
+
+        if (status.ok())
+        {
+            if (response.definitions_size() == 0)
+            {
+                std::cout << "No job definitions found" << std::endl;
+                return true;
+            }
+
+            std::cout << "Job Definitions (" << response.definitions_size() << "):" << std::endl;
+            std::cout << "----------------------------------------" << std::endl;
+            for (const auto& def : response.definitions())
+            {
+                std::cout << "Job Type: " << def.job_type() << std::endl;
+                std::cout << "  Definition: " << def.job_definition() << std::endl;
+                std::cout << "  Timeout: " << def.timeout_seconds() << "s" << std::endl;
+                std::cout << "  Created: " << def.created_at() << std::endl;
+                std::cout << "  Updated: " << def.updated_at() << std::endl;
+                std::cout << "----------------------------------------" << std::endl;
+            }
+            return true;
+        }
+        else
+        {
+            std::cerr << "RPC failed: " << status.error_message() << std::endl;
+            return false;
+        }
+    }
+
+    bool DeleteJobDefinition(const std::string& job_type)
+    {
+        DeleteJobDefinitionRequest request;
+        request.set_job_type(job_type);
+
+        DeleteJobDefinitionResponse response;
+        ClientContext context;
+
+        Status status = stub_->DeleteJobDefinition(&context, request, &response);
+
+        if (status.ok())
+        {
+            if (response.success())
+            {
+                std::cout << "Job definition '" << job_type << "' deleted successfully" << std::endl;
+                return true;
+            }
+            else
+            {
+                std::cerr << "Failed to delete job definition: " << response.message() << std::endl;
+                return false;
+            }
+        }
+        else
+        {
+            std::cerr << "RPC failed: " << status.error_message() << std::endl;
+            return false;
+        }
+    }
+
+    bool QueryJobs(const std::string& job_type_filter,
+                   QueryJobsRequest::StatusFilter status_filter,
+                   QueryJobsRequest::SortBy sort_by,
+                   int32_t limit,
+                   int32_t offset)
+    {
+        QueryJobsRequest request;
+        request.set_job_type_filter(job_type_filter);
+        request.set_status_filter(status_filter);
+        request.set_sort_by(sort_by);
+        request.set_limit(limit);
+        request.set_offset(offset);
+
+        QueryJobsResponse response;
+        ClientContext context;
+
+        Status status = stub_->QueryJobs(&context, request, &response);
+
+        if (status.ok())
+        {
+            if (response.jobs_size() == 0)
+            {
+                std::cout << "No jobs found matching criteria" << std::endl;
+                std::cout << "Total: 0 jobs" << std::endl;
+                return true;
+            }
+
+            std::cout << "Jobs (" << response.jobs_size() << " of " << response.total_count() << "):" << std::endl;
+            std::cout << "============================================" << std::endl;
+            for (const auto& job : response.jobs())
+            {
+                std::cout << "Job ID: " << job.job_id() << std::endl;
+                std::cout << "  Type: " << job.job_type() << std::endl;
+                std::cout << "  Status: " << JobStatusString(job.status()) << std::endl;
+                std::cout << "  Priority: " << job.priority() << std::endl;
+                std::cout << "  Submitted: " << job.submitted_at() << std::endl;
+                if (job.completed_at() > 0)
+                {
+                    std::cout << "  Completed: " << job.completed_at() << std::endl;
+                    std::cout << "  Duration: " << job.exec_duration_secs() << "s" << std::endl;
+                }
+                std::cout << "--------------------------------------------" << std::endl;
+            }
+            std::cout << "Total matching jobs: " << response.total_count() << std::endl;
+            return true;
+        }
+        else
+        {
+            std::cerr << "RPC failed: " << status.error_message() << std::endl;
+            return false;
+        }
+    }
+
 private:
     std::unique_ptr<OrchestratorService::Stub> stub_;
 
@@ -365,9 +490,13 @@ int main(int argc, char* argv[])
             std::cout << std::endl;
             std::cout << "Commands:" << std::endl;
             std::cout << "  define <job-type> <job-definition>" << std::endl;
-            std::cout << "  kickoff <job-type> [--priority <n>] [--blocker <id>]... [--input <arg>]..." << std::endl;
+            std::cout << "  list-definitions" << std::endl;
+            std::cout << "  delete-definition <job-type>" << std::endl;
+            std::cout << "  kickoff <job-type> [--priority <n>] [--blocker <id>]... [--input-job <id>]... [--input <arg>]..." << std::endl;
             std::cout << "  status <job-id>" << std::endl;
             std::cout << "  summary" << std::endl;
+            std::cout << "  query [--type <type>] [--status all|complete|incomplete|error|canceled]" << std::endl;
+            std::cout << "        [--sort id|completion|priority] [--limit <n>] [--offset <n>]" << std::endl;
             std::cout << "  pause" << std::endl;
             std::cout << "  resume" << std::endl;
             std::cout << "  cancel <job-id>" << std::endl;
@@ -415,6 +544,19 @@ int main(int argc, char* argv[])
         }
         return client.DefineJob(remaining_args[0], remaining_args[1]) ? 0 : 1;
     }
+    else if (command == "list-definitions")
+    {
+        return client.ListJobDefinitions() ? 0 : 1;
+    }
+    else if (command == "delete-definition")
+    {
+        if (remaining_args.empty())
+        {
+            std::cerr << "Usage: delete-definition <job-type>" << std::endl;
+            return 1;
+        }
+        return client.DeleteJobDefinition(remaining_args[0]) ? 0 : 1;
+    }
     else if (command == "kickoff")
     {
         if (remaining_args.empty())
@@ -426,6 +568,7 @@ int main(int argc, char* argv[])
         std::string job_type = remaining_args[0];
         int64_t priority = 0;
         std::vector<int64_t> blockers;
+        std::vector<int64_t> input_jobs;
         std::vector<std::string> inputs;
 
         for (size_t i = 1; i < remaining_args.size(); ++i)
@@ -438,13 +581,17 @@ int main(int argc, char* argv[])
             {
                 blockers.push_back(std::stoll(remaining_args[++i]));
             }
+            else if (remaining_args[i] == "--input-job" && i + 1 < remaining_args.size())
+            {
+                input_jobs.push_back(std::stoll(remaining_args[++i]));
+            }
             else if (remaining_args[i] == "--input" && i + 1 < remaining_args.size())
             {
                 inputs.push_back(remaining_args[++i]);
             }
         }
 
-        int64_t job_id = client.KickoffJob(job_type, priority, blockers, {}, inputs);
+        int64_t job_id = client.KickoffJob(job_type, priority, blockers, input_jobs, inputs);
         return job_id >= 0 ? 0 : 1;
     }
     else if (command == "status")
@@ -460,6 +607,60 @@ int main(int argc, char* argv[])
     else if (command == "summary")
     {
         return client.GetJobsSummary() ? 0 : 1;
+    }
+    else if (command == "query")
+    {
+        std::string job_type_filter;
+        QueryJobsRequest::StatusFilter status_filter = QueryJobsRequest::ALL;
+        QueryJobsRequest::SortBy sort_by = QueryJobsRequest::JOB_ID;
+        int32_t limit = 50;
+        int32_t offset = 0;
+
+        for (size_t i = 0; i < remaining_args.size(); ++i)
+        {
+            if (remaining_args[i] == "--type" && i + 1 < remaining_args.size())
+            {
+                job_type_filter = remaining_args[++i];
+            }
+            else if (remaining_args[i] == "--status" && i + 1 < remaining_args.size())
+            {
+                std::string status_str = remaining_args[++i];
+                if (status_str == "all") status_filter = QueryJobsRequest::ALL;
+                else if (status_str == "complete") status_filter = QueryJobsRequest::COMPLETE;
+                else if (status_str == "incomplete") status_filter = QueryJobsRequest::INCOMPLETE;
+                else if (status_str == "error") status_filter = QueryJobsRequest::ERROR;
+                else if (status_str == "canceled") status_filter = QueryJobsRequest::CANCELED;
+                else
+                {
+                    std::cerr << "Invalid status filter: " << status_str << std::endl;
+                    std::cerr << "Valid options: all, complete, incomplete, error, canceled" << std::endl;
+                    return 1;
+                }
+            }
+            else if (remaining_args[i] == "--sort" && i + 1 < remaining_args.size())
+            {
+                std::string sort_str = remaining_args[++i];
+                if (sort_str == "id") sort_by = QueryJobsRequest::JOB_ID;
+                else if (sort_str == "completion") sort_by = QueryJobsRequest::COMPLETION_TIME;
+                else if (sort_str == "priority") sort_by = QueryJobsRequest::PRIORITY;
+                else
+                {
+                    std::cerr << "Invalid sort option: " << sort_str << std::endl;
+                    std::cerr << "Valid options: id, completion, priority" << std::endl;
+                    return 1;
+                }
+            }
+            else if (remaining_args[i] == "--limit" && i + 1 < remaining_args.size())
+            {
+                limit = std::stoi(remaining_args[++i]);
+            }
+            else if (remaining_args[i] == "--offset" && i + 1 < remaining_args.size())
+            {
+                offset = std::stoi(remaining_args[++i]);
+            }
+        }
+
+        return client.QueryJobs(job_type_filter, status_filter, sort_by, limit, offset) ? 0 : 1;
     }
     else if (command == "pause")
     {

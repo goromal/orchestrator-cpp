@@ -81,7 +81,14 @@ struct WorkerThread {
     bool completed{false};
     int exit_code{-1};
     std::string script;  // Original job script for reference
-    bool timeout_scheduled{false};  // Track if timeout action has been scheduled
+    bool timed_out{false};  // Track if job was killed due to timeout
+    int pipe_fd{-1};  // File descriptor for reading stdout/stderr
+    std::string output_buffer;  // Buffer for accumulating output
+
+    // Job metadata for history tracking
+    std::string job_type;
+    int64_t priority{0};
+    int64_t spawn_time_seconds{0};
 };
 
 /**

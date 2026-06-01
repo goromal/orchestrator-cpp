@@ -42,6 +42,8 @@ struct JobDefinition {
     std::string job_type;
     std::string job_definition;  // Bash script with $INPUT_IDS[], $INPUT_ARGS[]
     int64_t timeout_seconds{3600};  // Default 1 hour timeout
+    int64_t created_at{0};  // Unix timestamp (0 = not set)
+    int64_t updated_at{0};  // Unix timestamp (0 = not set)
 };
 
 /**
@@ -143,6 +145,14 @@ public:
      */
     std::vector<JobDefinition> getAllJobDefinitions() const;
 
+    /**
+     * Delete a job definition by type
+     *
+     * @param job_type Job type identifier
+     * @return true if definition was deleted, false if not found or error
+     */
+    bool deleteJobDefinition(const std::string& job_type);
+
     // ──────────────────────────────────────────────────────────────────────────
     // Queue Snapshot Operations
     // ──────────────────────────────────────────────────────────────────────────
@@ -205,6 +215,36 @@ public:
     std::vector<orchestrator::job_queue::JobResult> getJobHistoryByTimeRange(
         int64_t start_time_seconds,
         int64_t end_time_seconds
+    ) const;
+
+    /**
+     * Query job history with filtering and sorting
+     *
+     * @param job_type_filter Filter by job type (empty = all)
+     * @param status_filter Filter by status (0=ALL, 1=COMPLETE, 2=INCOMPLETE, 3=ERROR, 4=CANCELED)
+     * @param sort_by Sort order (0=JOB_ID, 1=COMPLETION_TIME, 2=PRIORITY)
+     * @param limit Maximum results to return (0 = no limit)
+     * @param offset Skip first N results
+     * @param total_count Output parameter for total matching jobs (before pagination)
+     * @return Vector of matching job info
+     */
+    struct QueryJobInfo {
+        int64_t job_id;
+        std::string job_type;
+        int status;  // aapis::orchestrator::v1::JobStatus
+        int64_t priority;
+        int64_t submitted_at;
+        int64_t completed_at;
+        double exec_duration_secs;
+    };
+
+    std::vector<QueryJobInfo> queryJobs(
+        const std::string& job_type_filter,
+        int status_filter,
+        int sort_by,
+        int limit,
+        int offset,
+        int& total_count
     ) const;
 
     // ──────────────────────────────────────────────────────────────────────────

@@ -89,6 +89,13 @@ struct JobResult {
     int64_t job_id;
     aapis::orchestrator::v1::JobStatus status;
     std::variant<std::vector<std::string>, std::vector<Job>> outputs;
+
+    // Job metadata for history tracking
+    std::string job_type;
+    int64_t priority{0};
+    int64_t submitted_at{0};      // Unix timestamp when job was submitted
+    int64_t completed_at{0};      // Unix timestamp when job completed
+    double exec_duration_secs{0.0};  // Execution duration in seconds
 };
 
 /**
@@ -171,6 +178,9 @@ struct Store {
 
     // Snapshot data for restoration after reboot
     std::vector<Job> pendingInitExecs;
+
+    // Flag indicating pause is pending (for same-step job submissions)
+    bool pausePending{false};
 
     // ──────────────────────────────────────────────────────────────────────────
     // Job Registration and ID Assignment

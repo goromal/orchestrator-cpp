@@ -15,6 +15,8 @@ struct Job
     int64_t id{-1};
     // int64_t parentId{-1}; TODO shouldn't be necessary
 
+    std::string job_type;  // Job type identifier (for queries/filtering)
+
     aapis::orchestrator::v1::JobStatus status;
     aapis::orchestrator::v1::JobStatus prePauseStatus{aapis::orchestrator::v1::JobStatus::JOB_STATUS_INVALID};
 

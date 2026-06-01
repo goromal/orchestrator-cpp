@@ -114,13 +114,17 @@ bool SQLiteDatabase::createSchema()
         return false;
     }
 
-    // Create job_history table
+    // Create job_history table with extended schema for query support
     const char* create_job_history = R"(
         CREATE TABLE IF NOT EXISTS job_history (
             job_id INTEGER PRIMARY KEY,
+            job_type TEXT NOT NULL DEFAULT '',
             status INTEGER NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            submitted_at INTEGER NOT NULL DEFAULT 0,
+            completed_at INTEGER NOT NULL DEFAULT 0,
+            exec_duration_secs REAL NOT NULL DEFAULT 0.0,
             outputs_json TEXT,
-            completion_timestamp_seconds INTEGER NOT NULL,
             created_at INTEGER NOT NULL
         );
     )";
@@ -130,8 +134,18 @@ bool SQLiteDatabase::createSchema()
         return false;
     }
 
-    // Create index on completion timestamp for time-range queries
-    if (!executeSql("CREATE INDEX IF NOT EXISTS idx_history_completion ON job_history(completion_timestamp_seconds);"))
+    // Create indices for query performance
+    if (!executeSql("CREATE INDEX IF NOT EXISTS idx_history_completed_at ON job_history(completed_at);"))
+    {
+        return false;
+    }
+
+    if (!executeSql("CREATE INDEX IF NOT EXISTS idx_history_job_type ON job_history(job_type);"))
+    {
+        return false;
+    }
+
+    if (!executeSql("CREATE INDEX IF NOT EXISTS idx_history_status ON job_history(status);"))
     {
         return false;
     }
@@ -242,7 +256,7 @@ std::optional<JobDefinition> SQLiteDatabase::getJobDefinition(const std::string&
         return std::nullopt;
     }
 
-    const char* sql = "SELECT job_type, job_definition, timeout_seconds FROM job_definitions WHERE job_type = ?";
+    const char* sql = "SELECT job_type, job_definition, timeout_seconds, created_at, updated_at FROM job_definitions WHERE job_type = ?";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -263,6 +277,8 @@ std::optional<JobDefinition> SQLiteDatabase::getJobDefinition(const std::string&
         def.job_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         def.job_definition = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         def.timeout_seconds = sqlite3_column_int64(stmt, 2);
+        def.created_at = sqlite3_column_int64(stmt, 3);
+        def.updated_at = sqlite3_column_int64(stmt, 4);
 
         sqlite3_finalize(stmt);
         return def;
@@ -282,7 +298,7 @@ std::vector<JobDefinition> SQLiteDatabase::getAllJobDefinitions() const
         return results;
     }
 
-    const char* sql = "SELECT job_type, job_definition, timeout_seconds FROM job_definitions";
+    const char* sql = "SELECT job_type, job_definition, timeout_seconds, created_at, updated_at FROM job_definitions";
 
     sqlite3_stmt* stmt = nullptr;
     int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
@@ -299,11 +315,55 @@ std::vector<JobDefinition> SQLiteDatabase::getAllJobDefinitions() const
         def.job_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
         def.job_definition = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
         def.timeout_seconds = sqlite3_column_int64(stmt, 2);
+        def.created_at = sqlite3_column_int64(stmt, 3);
+        def.updated_at = sqlite3_column_int64(stmt, 4);
         results.push_back(def);
     }
 
     sqlite3_finalize(stmt);
     return results;
+}
+
+bool SQLiteDatabase::deleteJobDefinition(const std::string& job_type)
+{
+    if (!isOpen())
+    {
+        SPDLOG_ERROR("Database not open");
+        return false;
+    }
+
+    const char* sql = "DELETE FROM job_definitions WHERE job_type = ?";
+
+    sqlite3_stmt* stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+
+    if (rc != SQLITE_OK)
+    {
+        SPDLOG_ERROR("Failed to prepare statement: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, job_type.c_str(), -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE)
+    {
+        SPDLOG_ERROR("Failed to delete job definition: {}", sqlite3_errmsg(db_));
+        return false;
+    }
+
+    // Check if any rows were affected
+    int changes = sqlite3_changes(db_);
+    if (changes == 0)
+    {
+        SPDLOG_DEBUG("Job definition '{}' not found", job_type);
+        return false;
+    }
+
+    SPDLOG_INFO("Deleted job definition '{}'", job_type);
+    return true;
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -454,8 +514,8 @@ bool SQLiteDatabase::insertJobHistory(const orchestrator::job_queue::JobResult& 
 
     const char* sql = R"(
         INSERT OR REPLACE INTO job_history
-        (job_id, status, outputs_json, completion_timestamp_seconds, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        (job_id, job_type, status, priority, submitted_at, completed_at, exec_duration_secs, outputs_json, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -468,13 +528,16 @@ bool SQLiteDatabase::insertJobHistory(const orchestrator::job_queue::JobResult& 
     }
 
     auto now = std::chrono::system_clock::now().time_since_epoch().count();
-    auto completion_time = std::chrono::system_clock::now().time_since_epoch().count() / 1000000000;  // Convert to seconds
 
     sqlite3_bind_int64(stmt, 1, result.job_id);
-    sqlite3_bind_int(stmt, 2, static_cast<int>(result.status));
-    sqlite3_bind_text(stmt, 3, outputs_json.str().c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_int64(stmt, 4, completion_time);
-    sqlite3_bind_int64(stmt, 5, now);
+    sqlite3_bind_text(stmt, 2, result.job_type.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, static_cast<int>(result.status));
+    sqlite3_bind_int64(stmt, 4, result.priority);
+    sqlite3_bind_int64(stmt, 5, result.submitted_at);
+    sqlite3_bind_int64(stmt, 6, result.completed_at);
+    sqlite3_bind_double(stmt, 7, result.exec_duration_secs);
+    sqlite3_bind_text(stmt, 8, outputs_json.str().c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 9, now);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -543,8 +606,8 @@ std::vector<orchestrator::job_queue::JobResult> SQLiteDatabase::getJobHistoryByT
     const char* sql = R"(
         SELECT job_id, status, outputs_json
         FROM job_history
-        WHERE completion_timestamp_seconds >= ? AND completion_timestamp_seconds <= ?
-        ORDER BY completion_timestamp_seconds DESC
+        WHERE completed_at >= ? AND completed_at <= ?
+        ORDER BY completed_at DESC
     )";
 
     sqlite3_stmt* stmt = nullptr;
@@ -569,6 +632,162 @@ std::vector<orchestrator::job_queue::JobResult> SQLiteDatabase::getJobHistoryByT
     }
 
     sqlite3_finalize(stmt);
+    return results;
+}
+
+std::vector<SQLiteDatabase::QueryJobInfo> SQLiteDatabase::queryJobs(
+    const std::string& job_type_filter,
+    int status_filter,
+    int sort_by,
+    int limit,
+    int offset,
+    int& total_count
+) const
+{
+    if (!isOpen())
+    {
+        SPDLOG_ERROR("Database not open");
+        total_count = 0;
+        return {};
+    }
+
+    // Build WHERE clause based on filters
+    std::ostringstream where_clause;
+    std::vector<std::pair<int, std::string>> bindings;  // (index, value)
+
+    bool need_and = false;
+
+    // Filter by job_type
+    if (!job_type_filter.empty())
+    {
+        where_clause << "job_type = ?";
+        bindings.push_back({bindings.size() + 1, job_type_filter});
+        need_and = true;
+    }
+
+    // Filter by status
+    // 0=ALL, 1=COMPLETE, 2=INCOMPLETE, 3=ERROR, 4=CANCELED
+    if (status_filter != 0)
+    {
+        if (need_and) where_clause << " AND ";
+
+        if (status_filter == 1)  // COMPLETE
+        {
+            where_clause << "status = " << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE);
+        }
+        else if (status_filter == 2)  // INCOMPLETE (QUEUED, ACTIVE, BLOCKED, PAUSED)
+        {
+            where_clause << "status IN ("
+                        << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED) << ","
+                        << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE) << ","
+                        << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED) << ","
+                        << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED) << ")";
+        }
+        else if (status_filter == 3)  // ERROR
+        {
+            where_clause << "status = " << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR);
+        }
+        else if (status_filter == 4)  // CANCELED
+        {
+            where_clause << "status = " << static_cast<int>(aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED);
+        }
+
+        need_and = true;
+    }
+
+    std::string where_sql = where_clause.str().empty() ? "" : " WHERE " + where_clause.str();
+
+    // First, get total count
+    std::string count_sql = "SELECT COUNT(*) FROM job_history" + where_sql + ";";
+
+    sqlite3_stmt* count_stmt = nullptr;
+    int rc = sqlite3_prepare_v2(db_, count_sql.c_str(), -1, &count_stmt, nullptr);
+
+    if (rc != SQLITE_OK)
+    {
+        SPDLOG_ERROR("Failed to prepare count query: {}", sqlite3_errmsg(db_));
+        total_count = 0;
+        return {};
+    }
+
+    // Bind parameters for count query
+    for (const auto& [idx, value] : bindings)
+    {
+        sqlite3_bind_text(count_stmt, idx, value.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    if (sqlite3_step(count_stmt) == SQLITE_ROW)
+    {
+        total_count = sqlite3_column_int(count_stmt, 0);
+    }
+    else
+    {
+        total_count = 0;
+    }
+
+    sqlite3_finalize(count_stmt);
+
+    // Build ORDER BY clause
+    std::string order_by;
+    if (sort_by == 0)  // JOB_ID (chronological)
+    {
+        order_by = " ORDER BY job_id ASC";
+    }
+    else if (sort_by == 1)  // COMPLETION_TIME
+    {
+        order_by = " ORDER BY completed_at DESC";
+    }
+    else if (sort_by == 2)  // PRIORITY
+    {
+        order_by = " ORDER BY priority ASC, job_id ASC";  // Lower priority value = higher priority
+    }
+
+    // Build pagination
+    std::string pagination;
+    if (limit > 0)
+    {
+        pagination = " LIMIT " + std::to_string(limit) + " OFFSET " + std::to_string(offset);
+    }
+
+    // Build main query
+    std::string query_sql =
+        "SELECT job_id, job_type, status, priority, submitted_at, completed_at, exec_duration_secs "
+        "FROM job_history" + where_sql + order_by + pagination + ";";
+
+    sqlite3_stmt* stmt = nullptr;
+    rc = sqlite3_prepare_v2(db_, query_sql.c_str(), -1, &stmt, nullptr);
+
+    if (rc != SQLITE_OK)
+    {
+        SPDLOG_ERROR("Failed to prepare query: {}", sqlite3_errmsg(db_));
+        return {};
+    }
+
+    // Bind parameters for main query
+    for (const auto& [idx, value] : bindings)
+    {
+        sqlite3_bind_text(stmt, idx, value.c_str(), -1, SQLITE_TRANSIENT);
+    }
+
+    std::vector<QueryJobInfo> results;
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW)
+    {
+        QueryJobInfo info;
+        info.job_id = sqlite3_column_int64(stmt, 0);
+        info.job_type = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        info.status = sqlite3_column_int(stmt, 2);
+        info.priority = sqlite3_column_int64(stmt, 3);
+        info.submitted_at = sqlite3_column_int64(stmt, 4);
+        info.completed_at = sqlite3_column_int64(stmt, 5);
+        info.exec_duration_secs = sqlite3_column_double(stmt, 6);
+
+        results.push_back(info);
+    }
+
+    sqlite3_finalize(stmt);
+
+    SPDLOG_DEBUG("Query returned {} jobs (total: {})", results.size(), total_count);
     return results;
 }
 
@@ -619,7 +838,7 @@ void SQLiteDatabase::cleanupOldHistory(int days_to_keep)
     auto cutoff_seconds = std::chrono::duration_cast<std::chrono::seconds>(cutoff_time.time_since_epoch()).count();
 
     std::ostringstream sql;
-    sql << "DELETE FROM job_history WHERE completion_timestamp_seconds < " << cutoff_seconds << ";";
+    sql << "DELETE FROM job_history WHERE completed_at < " << cutoff_seconds << ";";
 
     if (executeSql(sql.str()))
     {

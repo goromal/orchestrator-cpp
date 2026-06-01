@@ -48,17 +48,48 @@ int64_t Store::initializeJobData(Job& job, bool paused)
 
     job.id = spawnMicrosId;
 
-    if (job.numBlockers() == 0)
+    // Check if any blockers are incomplete (not COMPLETE)
+    bool hasIncompleteBlockers = false;
+    for (int64_t blocker_id : job.independentBlockers)
+    {
+        auto blocker_it = std::find_if(pendingJobs.begin(), pendingJobs.end(),
+                                       [blocker_id](const Job& j) { return j.id == blocker_id; });
+        if (blocker_it != pendingJobs.end() &&
+            blocker_it->status != aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE)
+        {
+            hasIncompleteBlockers = true;
+            break;
+        }
+    }
+    if (!hasIncompleteBlockers)
+    {
+        for (int64_t blocker_id : job.relevantBlockers)
+        {
+            auto blocker_it = std::find_if(pendingJobs.begin(), pendingJobs.end(),
+                                           [blocker_id](const Job& j) { return j.id == blocker_id; });
+            if (blocker_it != pendingJobs.end() &&
+                blocker_it->status != aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE)
+            {
+                hasIncompleteBlockers = true;
+                break;
+            }
+        }
+    }
+
+    // Set status based on blocker readiness
+    if (!hasIncompleteBlockers)
     {
         job.status = (paused) ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
                               : aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
         job.prePauseStatus = aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
+        std::cout << "DEBUG: initializeJobData set job to QUEUED (all blockers complete)" << std::endl;
     }
     else
     {
         job.status = (paused) ? aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED
                               : aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED;
         job.prePauseStatus = aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED;
+        std::cout << "DEBUG: initializeJobData set job to BLOCKED (has incomplete blockers)" << std::endl;
     }
 
     return spawnMicrosId;
@@ -234,6 +265,14 @@ void Store::processJobResult(const JobResult& result, bool paused)
                     j.relevantBlockers.erase(relBlockerIt);
                     std::move(outputs.begin(), outputs.end(), std::back_inserter(j.inputs));
                 }
+                // If all blockers have been removed, transition from BLOCKED to QUEUED
+                if (j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED &&
+                    j.numBlockers() == 0)
+                {
+                    j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
+                    std::cout << "DEBUG: Job " << j.id << " transitioned from BLOCKED to QUEUED" << std::endl;
+                    SPDLOG_INFO("Job {} transitioned from BLOCKED to QUEUED (all blockers complete)", j.id);
+                }
             });
         }
         // If the job returned child jobs, then add each child job to pendingJobs.
@@ -261,6 +300,14 @@ void Store::processJobResult(const JobResult& result, bool paused)
                     j.relevantBlockers.erase(relBlockerIt);
                     std::copy(childJobIds.begin(), childJobIds.end(),
                              std::back_inserter(j.relevantBlockers));
+                }
+                // If all blockers have been removed, transition from BLOCKED to QUEUED
+                if (j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED &&
+                    j.numBlockers() == 0)
+                {
+                    j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED;
+                    std::cout << "DEBUG: Job " << j.id << " transitioned from BLOCKED to QUEUED" << std::endl;
+                    SPDLOG_INFO("Job {} transitioned from BLOCKED to QUEUED (all blockers complete)", j.id);
                 }
             });
         }
@@ -445,8 +492,11 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
 
             SPDLOG_INFO("JobQueue received new job with priority {}", job.priority);
 
-            // Register job and assign ID (not paused in running state)
-            int64_t id = s.addAndRegisterNewJob(job, false);
+            // Register job and assign ID
+            // Check if pause is pending from same reactor step
+            bool isPaused = s.pausePending;
+            std::cout << "DEBUG: JobQueue new job handler, pausePending=" << s.pausePending << ", isPaused=" << isPaused << std::endl;
+            int64_t id = s.addAndRegisterNewJob(job, isPaused);
 
             std::cout << "DEBUG: JobQueue added job to pendingJobs, id=" << id << ", size=" << s.pendingJobs.size() << std::endl;
 
@@ -541,9 +591,12 @@ size_t RunningState::step(Store& s, Ports& p, [[maybe_unused]] const Container& 
             {
             case ControlRequest::Command::PAUSE:
                 SPDLOG_INFO("JobQueue pausing all jobs");
+                std::cout << "DEBUG: JobQueue PAUSE handler, setting pausePending=true" << std::endl;
+                s.pausePending = true;  // Set flag for same-step job submissions
                 s.pauseJobs();
                 response.message = "Jobs paused";
                 p.control_response_out.set(response);
+                std::cout << "DEBUG: JobQueue PAUSE handler, returning PausedState" << std::endl;
                 return PausedState::index();
 
             case ControlRequest::Command::RESUME:
@@ -645,10 +698,14 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
 {
     (void)c;
     (void)tag;
+
+    // Clear pause pending flag when entering PausedState
+    s.pausePending = false;
+
     // Handle all logical actions based on StepTrigger
     if (trigger.type == ::services::StepTrigger::Type::LOGICAL_ACTION)
     {
-        if (trigger.action_name == "on_new_job_in")
+        if (trigger.action_name == "on_port_job_server_to_queue_new_job")
         {
             // Handle new job submission (paused)
             if (!p.new_job_in.is_present())
@@ -659,11 +716,13 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
             SPDLOG_INFO("JobQueue received new job with priority {} (paused)", job.priority);
 
             // Register job and assign ID (paused state)
+            std::cerr << "DEBUG: PausedState new job handler called, adding job with paused=true" << std::endl;
             int64_t id = s.addAndRegisterNewJob(job, true);
 
             // Send response
             p.new_job_id_out.set(id);
 
+            std::cerr << "DEBUG: PausedState assigned job ID=" << id << ", paused" << std::endl;
             SPDLOG_INFO("JobQueue assigned ID {} to new job (paused)", id);
 
             // Don't execute jobs in paused state
@@ -730,19 +789,7 @@ size_t PausedState::step(Store& s, Ports& p, [[maybe_unused]] const Container& c
                 response.message = "Jobs resumed";
                 p.control_response_out.set(response);
 
-                // Drain ready jobs inline before transitioning to running state
-                for (auto& j : s.pendingJobs)
-                {
-                    if (j.numBlockers() == 0 &&
-                        j.status == aapis::orchestrator::v1::JobStatus::JOB_STATUS_QUEUED)
-                    {
-                        SPDLOG_INFO("JobQueue sending job {} to executor", j.id);
-                        p.execute_job_out.set(j);
-                        j.status = aapis::orchestrator::v1::JobStatus::JOB_STATUS_ACTIVE;
-                        s.activeJobIds[j.id] = true;
-                    }
-                }
-
+                // Transition to running state - let heartbeat handle job dispatch
                 return RunningState::index();
 
             case ControlRequest::Command::CANCEL:

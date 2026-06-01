@@ -1,7 +1,6 @@
 let
-  pkgs = import (fetchTarball
-    ("https://github.com/goromal/anixpkgs/archive/5f50d09b512c87349b3411bc90a0291838878e5e.tar.gz"))
-    { };
+  # Use local anixpkgs for development
+  pkgs = import ../anixpkgs { };
 in with pkgs;
 mkShell {
   nativeBuildInputs = [ cpp-helper cmake ];

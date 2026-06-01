@@ -174,10 +174,7 @@ struct Store {
         if (request.job_definition().empty()) {
             return {false, "job_definition cannot be empty"};
         }
-        // Check if job type already exists
-        if (job_definitions.find(request.job_type()) != job_definitions.end()) {
-            return {false, "job_type already defined: " + request.job_type()};
-        }
+        // Allow redefining job types (idempotent INSERT OR REPLACE behavior)
         return {true, ""};
     }
 
@@ -236,6 +233,7 @@ struct Store {
         }
 
         Job job;
+        job.job_type = request.job_type();
         job.priority = request.priority();
 
         // Set job script from definition
@@ -355,7 +353,7 @@ protected:
      * @param action_name Name of the action (e.g., "define_job_request")
      * @param action_data Type-erased request data
      */
-    void processActionData(const std::string& action_name, const std::any& action_data) override;
+    void processActionData(const std::string& action_name, const std::any& action_data);
 };
 
 } // namespace job_server

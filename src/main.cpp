@@ -4,6 +4,7 @@
 #include <thread>
 #include <csignal>
 #include <atomic>
+#include <ctime>
 
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
@@ -36,8 +37,10 @@ void signalHandler(int signum)
 class OrchestratorServiceImpl : public aapis::orchestrator::v2::OrchestratorService::Service
 {
 public:
-    explicit OrchestratorServiceImpl(std::shared_ptr<orchestrator::job_server::JobServer> job_server)
-        : job_server_(job_server)
+    explicit OrchestratorServiceImpl(
+        std::shared_ptr<orchestrator::job_server::JobServer> job_server,
+        std::shared_ptr<orchestrator::job_database::JobDatabase> job_database)
+        : job_server_(job_server), job_database_(job_database)
     {
     }
 
@@ -46,8 +49,27 @@ public:
                           aapis::orchestrator::v2::DefineJobResponse* response) override
     {
         (void)context;
-        return handleRpc(*request, response, "define_job_request",
-                        job_server_->getPorts().define_job_response_out);
+
+        // First, let JobServer handle validation and in-memory storage
+        auto status = handleRpc(*request, response, "define_job_request",
+                               job_server_->getPorts().define_job_response_out);
+
+        // If successful, also persist to database
+        if (status.ok() && response->success()) {
+            orchestrator::job_database::JobDefinition db_def;
+            db_def.job_type = request->job_type();
+            db_def.job_definition = request->job_definition();
+            db_def.timeout_seconds = 3600;  // Default timeout
+            db_def.created_at = std::time(nullptr);
+            db_def.updated_at = std::time(nullptr);
+
+            bool db_success = job_database_->getStore().db.insertJobDefinition(db_def);
+            if (!db_success) {
+                SPDLOG_WARN("Failed to persist job definition '{}' to database", request->job_type());
+            }
+        }
+
+        return status;
     }
 
     grpc::Status KickoffJob(grpc::ServerContext* context,
@@ -104,6 +126,81 @@ public:
                         job_server_->getPorts().cancel_response_out);
     }
 
+    grpc::Status ListJobDefinitions(grpc::ServerContext* context,
+                                    const aapis::orchestrator::v2::ListJobDefinitionsRequest* request,
+                                    aapis::orchestrator::v2::ListJobDefinitionsResponse* response) override
+    {
+        (void)context;
+        (void)request;
+
+        // Access JobDatabase directly (synchronous operation)
+        auto definitions = job_database_->getStore().db.getAllJobDefinitions();
+
+        for (const auto& def : definitions) {
+            auto* info = response->add_definitions();
+            info->set_job_type(def.job_type);
+            info->set_job_definition(def.job_definition);
+            info->set_timeout_seconds(def.timeout_seconds);
+            info->set_created_at(def.created_at);
+            info->set_updated_at(def.updated_at);
+        }
+
+        return grpc::Status::OK;
+    }
+
+    grpc::Status DeleteJobDefinition(grpc::ServerContext* context,
+                                     const aapis::orchestrator::v2::DeleteJobDefinitionRequest* request,
+                                     aapis::orchestrator::v2::DeleteJobDefinitionResponse* response) override
+    {
+        (void)context;
+
+        // Access JobDatabase directly (synchronous operation)
+        bool success = job_database_->getStore().db.deleteJobDefinition(request->job_type());
+
+        response->set_success(success);
+        if (success) {
+            response->set_message("Job definition deleted successfully");
+        } else {
+            response->set_message("Job definition not found: " + request->job_type());
+        }
+
+        return grpc::Status::OK;
+    }
+
+    grpc::Status QueryJobs(grpc::ServerContext* context,
+                          const aapis::orchestrator::v2::QueryJobsRequest* request,
+                          aapis::orchestrator::v2::QueryJobsResponse* response) override
+    {
+        (void)context;
+
+        // Access JobDatabase directly (synchronous operation)
+        int total_count = 0;
+        auto results = job_database_->getStore().db.queryJobs(
+            request->job_type_filter(),
+            static_cast<int>(request->status_filter()),
+            static_cast<int>(request->sort_by()),
+            request->limit(),
+            request->offset(),
+            total_count
+        );
+
+        // Populate response
+        for (const auto& info : results) {
+            auto* job_info = response->add_jobs();
+            job_info->set_job_id(info.job_id);
+            job_info->set_job_type(info.job_type);
+            job_info->set_status(static_cast<aapis::orchestrator::v2::JobStatus>(info.status));
+            job_info->set_priority(info.priority);
+            job_info->set_submitted_at(info.submitted_at);
+            job_info->set_completed_at(info.completed_at);
+            job_info->set_exec_duration_secs(info.exec_duration_secs);
+        }
+
+        response->set_total_count(total_count);
+
+        return grpc::Status::OK;
+    }
+
 private:
     /**
      * Handle RPC with request-response polling pattern.
@@ -158,6 +255,7 @@ private:
     }
 
     std::shared_ptr<orchestrator::job_server::JobServer> job_server_;
+    std::shared_ptr<orchestrator::job_database::JobDatabase> job_database_;
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -333,6 +431,15 @@ int main(int argc, char* argv[])
         job_queue
     );
 
+    // JobExecutor → JobDatabase: Job history for query support
+    connection_mgr.connect(
+        job_executor->getPorts().job_history_out,
+        job_database->getPorts().job_history_in,
+        job_executor_id, job_database_id,
+        "job_history",
+        job_database
+    );
+
     // JobQueue ↔ JobDatabase: Snapshots for persistence
     connection_mgr.connect(
         job_queue->getPorts().save_snapshot_out,
@@ -365,11 +472,29 @@ int main(int argc, char* argv[])
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     // ──────────────────────────────────────────────────────────────────────────
+    // Load Job Definitions from Database
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // Load all job definitions and register them with JobServer
+    auto definitions = job_database->getStore().db.getAllJobDefinitions();
+    SPDLOG_INFO("Loading {} job definitions from database", definitions.size());
+
+    for (const auto& def : definitions) {
+        // Register with JobServer's in-memory store
+        orchestrator::job_server::JobDefinition job_def;
+        job_def.job_type = def.job_type;
+        job_def.job_definition = def.job_definition;
+
+        job_server->getStore().job_definitions[def.job_type] = job_def;
+        SPDLOG_INFO("Loaded job definition: {}", def.job_type);
+    }
+
+    // ──────────────────────────────────────────────────────────────────────────
     // Create gRPC Server for JobServer
     // ──────────────────────────────────────────────────────────────────────────
 
     std::string grpc_address = "0.0.0.0:" + std::to_string(grpc_port);
-    OrchestratorServiceImpl service_impl(job_server);
+    OrchestratorServiceImpl service_impl(job_server, job_database);
 
     grpc::ServerBuilder server_builder;
     server_builder.AddListeningPort(grpc_address, grpc::InsecureServerCredentials());

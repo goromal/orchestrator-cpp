@@ -286,6 +286,12 @@ size_t RunningState::step(Store& s, Ports& p,
                             case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR:
                                 response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_ERROR);
                                 break;
+                            case aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED:
+                                response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_BLOCKED);
+                                break;
+                            case aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED:
+                                response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_PAUSED);
+                                break;
                             case aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED:
                                 response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_CANCELED);
                                 break;
@@ -295,7 +301,7 @@ size_t RunningState::step(Store& s, Ports& p,
                         }
 
                         response.set_message("Job found");
-                        SPDLOG_INFO("JobStatus response: job_id={} status={}", s.pending_job_status_id, job.status);
+                        SPDLOG_INFO("JobStatus response: job_id={} status={}", s.pending_job_status_id, static_cast<int>(job.status));
                     } else {
                         response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_UNSPECIFIED);
                         response.set_message(query_response.error_message.empty()
@@ -316,6 +322,9 @@ size_t RunningState::step(Store& s, Ports& p,
                         int num_queued = 0;
                         int num_active = 0;
                         int num_completed = 0;
+                        int num_blocked = 0;
+                        int num_paused = 0;
+                        int num_discarded = 0; // ERROR + CANCELED
 
                         for (const auto& job : query_response.jobs) {
                             switch (job.status) {
@@ -328,6 +337,16 @@ size_t RunningState::step(Store& s, Ports& p,
                                 case aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE:
                                     num_completed++;
                                     break;
+                                case aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED:
+                                    num_blocked++;
+                                    break;
+                                case aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED:
+                                    num_paused++;
+                                    break;
+                                case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR:
+                                case aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED:
+                                    num_discarded++;
+                                    break;
                                 default:
                                     break;
                             }
@@ -336,8 +355,11 @@ size_t RunningState::step(Store& s, Ports& p,
                         response.set_num_queued_jobs(num_queued);
                         response.set_num_active_jobs(num_active);
                         response.set_num_completed_jobs(num_completed);
-                        SPDLOG_INFO("JobsSummary response: queued={} active={} completed={}",
-                                   num_queued, num_active, num_completed);
+                        response.set_num_blocked_jobs(num_blocked);
+                        response.set_num_paused_jobs(num_paused);
+                        response.set_num_discarded_jobs(num_discarded);
+                        SPDLOG_INFO("JobsSummary response: queued={} active={} completed={} blocked={} paused={} discarded={}",
+                                   num_queued, num_active, num_completed, num_blocked, num_paused, num_discarded);
                     } else {
                         response.set_num_queued_jobs(0);
                         response.set_num_active_jobs(0);
@@ -400,6 +422,12 @@ size_t RunningState::step(Store& s, Ports& p,
                     case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR:
                         response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_ERROR);
                         break;
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_BLOCKED);
+                        break;
+                    case aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED:
+                        response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_PAUSED);
+                        break;
                     case aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED:
                         response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_CANCELED);
                         break;
@@ -409,7 +437,7 @@ size_t RunningState::step(Store& s, Ports& p,
                 }
 
                 response.set_message("Job found");
-                SPDLOG_INFO("JobStatus response: job_id={} status={}", s.pending_job_status_id, job.status);
+                SPDLOG_INFO("JobStatus response: job_id={} status={}", s.pending_job_status_id, static_cast<int>(job.status));
             } else {
                 response.set_status(aapis::orchestrator::v2::JobStatus::JOB_STATUS_UNSPECIFIED);
                 response.set_message(query_response.error_message.empty()
@@ -430,6 +458,9 @@ size_t RunningState::step(Store& s, Ports& p,
                 int num_queued = 0;
                 int num_active = 0;
                 int num_completed = 0;
+                int num_blocked = 0;
+                int num_paused = 0;
+                int num_discarded = 0; // ERROR + CANCELED
 
                 for (const auto& job : query_response.jobs) {
                     switch (job.status) {
@@ -442,6 +473,16 @@ size_t RunningState::step(Store& s, Ports& p,
                         case aapis::orchestrator::v1::JobStatus::JOB_STATUS_COMPLETE:
                             num_completed++;
                             break;
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_BLOCKED:
+                            num_blocked++;
+                            break;
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_PAUSED:
+                            num_paused++;
+                            break;
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_ERROR:
+                        case aapis::orchestrator::v1::JobStatus::JOB_STATUS_CANCELED:
+                            num_discarded++;
+                            break;
                         default:
                             break;
                     }
@@ -450,8 +491,11 @@ size_t RunningState::step(Store& s, Ports& p,
                 response.set_num_queued_jobs(num_queued);
                 response.set_num_active_jobs(num_active);
                 response.set_num_completed_jobs(num_completed);
-                SPDLOG_INFO("JobsSummary response: queued={} active={} completed={}",
-                           num_queued, num_active, num_completed);
+                response.set_num_blocked_jobs(num_blocked);
+                response.set_num_paused_jobs(num_paused);
+                response.set_num_discarded_jobs(num_discarded);
+                SPDLOG_INFO("JobsSummary response: queued={} active={} completed={} blocked={} paused={} discarded={}",
+                           num_queued, num_active, num_completed, num_blocked, num_paused, num_discarded);
             } else {
                 response.set_num_queued_jobs(0);
                 response.set_num_active_jobs(0);
